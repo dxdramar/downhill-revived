@@ -233,6 +233,20 @@ bool inside(float e, int2 a, int2 b, int sign) {
     return e * sign > 0 || (e == 0 && (sign > 0 ? top_left(a,b) : top_left(b,a)));
 }
 
+#if DHD_NO_DOUBLE
+// Metal has no doubles (the Mac build, finding 075): the depth sums run in float, the double's
+// bits truncated to a float's. Not exact for 24- and 32-bit Z far from the camera.
+float asdouble_float(uint lo, uint hi) {
+    uint exponent = hi >> 20 & 0x7FF;
+    int e = (int)exponent - 1023 + 127;
+    if (exponent == 0 || e <= 0) return 0;
+    if (e >= 255) return asfloat((hi & 0x80000000) | 0x7F800000);
+    return asfloat((hi & 0x80000000) | (uint)e << 23 | (hi & 0xFFFFF) << 3 | lo >> 29);
+}
+#define double float
+#define asdouble asdouble_float
+#endif
+
 uint depth_integer(double z) {
     if (z <= 0.0) return 0;
     if (z >= 4294967295.0) return 0xFFFFFFFF;

@@ -52,7 +52,7 @@ static int in_shell, room_pending, hold_rider, resume_home;
 static int chosen_rider, chosen_bike, ready_track, ready_options;
 static int public_room, room_settings_sent, room_ready_sent, room_track = 0, room_options;
 static int32_t chosen_outfit[3], chosen_cycle[3];
-#define SHELL_WORD(a) (*(int32_t *)(uintptr_t)(0x08000000u + (a)))
+#define SHELL_WORD(a) (*(int32_t *)(uintptr_t)PS2_HOST(a))
 #define SETUP_WORD(offset) SHELL_WORD(0x4B25A0 + (offset))
 void port_online_choose_begin(void);
 void port_online_choose_end(void);
@@ -102,8 +102,8 @@ static void run_page(void)
    intercepting GET READY: changing only MENU bypasses all of these side effects. */
 static void selection_end(void)
 {
-    void *animation = (void *)(uintptr_t)(0x08000000u + 0x4C6370);
-    void *sound = (void *)(uintptr_t)(0x08000000u + 0x4B2A90);
+    void *animation = (void *)(uintptr_t)PS2_HOST(0x4C6370);
+    void *sound = (void *)(uintptr_t)PS2_HOST(0x4B2A90);
     func_001F67F0(0);
     func_001F6798(0);
     func_001F5B08(0);
@@ -149,12 +149,12 @@ static uint8_t kept_flags[23];
 static void unlock_all(void)
 {
     if (unlocked) return;
-    uint8_t *flags = (uint8_t *)(uintptr_t)(0x08000000u + UNLOCK_FLAGS);
+    uint8_t *flags = (uint8_t *)(uintptr_t)PS2_HOST(UNLOCK_FLAGS);
     kept_pros = SHELL_WORD(UNLOCK_PROS), kept_tracks = SHELL_WORD(UNLOCK_TRACKS);
     kept_riders = SHELL_WORD(UNLOCK_RIDERS), kept_bikes = SHELL_WORD(UNLOCK_BIKES);
     memcpy(kept_flags, flags, sizeof kept_flags);
     SHELL_WORD(UNLOCK_PROS) |= 0x3FFF;
-    func_001BB670((void *)(uintptr_t)(0x08000000u + 0x4B25A0));
+    func_001BB670((void *)(uintptr_t)PS2_HOST(0x4B25A0));
     SHELL_WORD(UNLOCK_TRACKS) |= 0x035FFFFF;
     SHELL_WORD(UNLOCK_RIDERS) |= 0xFFFF;
     SHELL_WORD(UNLOCK_BIKES) |= 0x3FFFF;
@@ -169,8 +169,8 @@ void port_online_relock(void)
     if (!unlocked) return;
     SHELL_WORD(UNLOCK_PROS) = kept_pros, SHELL_WORD(UNLOCK_TRACKS) = kept_tracks;
     SHELL_WORD(UNLOCK_RIDERS) = kept_riders, SHELL_WORD(UNLOCK_BIKES) = kept_bikes;
-    func_001BB670((void *)(uintptr_t)(0x08000000u + 0x4B25A0));
-    memcpy((uint8_t *)(uintptr_t)(0x08000000u + UNLOCK_FLAGS), kept_flags, sizeof kept_flags);
+    func_001BB670((void *)(uintptr_t)PS2_HOST(0x4B25A0));
+    memcpy((uint8_t *)(uintptr_t)PS2_HOST(UNLOCK_FLAGS), kept_flags, sizeof kept_flags);
     hle_mc_hold = unlocked = 0;
     hle_log("online menu: the player's own unlocks again\n");
 }
@@ -782,7 +782,7 @@ int port_online_menu(void)
    room closed, when the camera is back on the title. */
 int port_online_resume(void)
 {
-    void *animation = (void *)(uintptr_t)(0x08000000u + 0x4C6370);
+    void *animation = (void *)(uintptr_t)PS2_HOST(0x4C6370);
     if (!resume_home) return 0;
     func_00203590(animation, 0x2330, 0, 1);
     float t = func_00203C28(animation);
@@ -839,7 +839,7 @@ int port_online_shell(void)
            which sets up the race's loading (func_00139BF8) and takes the camera. The choice is
            complete here: keep it and leave as the rider screen's Back does; the room (with the
            host's track) opens over the rider screen. */
-        void *animation = (void *)(uintptr_t)(0x08000000u + 0x4C6370);
+        void *animation = (void *)(uintptr_t)PS2_HOST(0x4C6370);
         int rider_index = SHELL_WORD(0x4C6910 + 4 * SHELL_WORD(0x29DF68));
         func_00203590(animation, 0x2330, 0, D_00275CB0[rider_index]);
         if (func_00203C28(animation) < 1.0f) return 0;

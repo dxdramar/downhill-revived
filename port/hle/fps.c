@@ -205,7 +205,7 @@ void port_fps_contact_recovery(void *body)
     if (!port_fps_high()) return;
     unsigned char *b=body,*r=*(unsigned char **)(b+0x158);
     Air *a=air_for(body);
-    int slot=*(int *)(r+0x797C),race_phase=*(int *)0x0843F348;
+    int slot=*(int *)(r+0x797C),race_phase=*(int *)PS2_HOST(0x43F348);
     float *p=(float *)(b+0x50);
     int contact=b[0x354]!=2 || b[0x3D4]!=2;
     int supported=contact || (a->stalled_steps && port_air_age(body,*(short *)(b+0x4A4))<4);
@@ -213,8 +213,8 @@ void port_fps_contact_recovery(void *body)
     extern float func_0012DF48(void *);
     /* AI already has the retail grounded recovery states (001100D0/103B0).
        Preserve their own field timers; this fills the human controller gap. */
-    if (*(int *)(r+0x7A5C)!=1 || slot<0 || slot>=10 || *(int *)0x0829DED8!=9 || race_phase<2 || race_phase>4 ||
-        *(unsigned char *)(0x0843EF18+slot) || (r[0x4098]&4) ||
+    if (*(int *)(r+0x7A5C)!=1 || slot<0 || slot>=10 || *(int *)PS2_HOST(0x29DED8)!=9 || race_phase<2 || race_phase>4 ||
+        *(unsigned char *)(PS2_HOST(0x43EF18)+slot) || (r[0x4098]&4) ||
         !supported || !pedal || func_0012DF48(r)>0) {
         a->stalled_steps=0;
         return;
@@ -307,11 +307,11 @@ void port_fps_observe(void)
             fprintf(steps_out,"tick,hz,slot,frame,x,y,z,speed\n");
         }
     }
-    if (!out || *(int *)0x0829DED8!=9 || *(int *)0x0843F348<2 || *(int *)0x0843F348>4) return;
-    int tick=*(int *)0x0843EEC8;
+    if (!out || *(int *)PS2_HOST(0x29DED8)!=9 || *(int *)PS2_HOST(0x43F348)<2 || *(int *)PS2_HOST(0x43F348)>4) return;
+    int tick=*(int *)PS2_HOST(0x43EEC8);
     if (tick<=360) {
         for (int i=0;i<10;i++) {
-            unsigned char *r=(unsigned char *)(0x082AF2C0+i*0x7BD0);
+            unsigned char *r=(unsigned char *)(PS2_HOST(0x2AF2C0)+i*0x7BD0);
             float *p=(float *)(r+0x4270),*v=(float *)(r+0x4180);
             fprintf(steps_out,"%d,%d,%d,%llu,%.9g,%.9g,%.9g,%.9g\n",tick,port_fps(),i,
                 (unsigned long long)race_steps,p[0],p[1],p[2],sqrtf(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]));
@@ -321,14 +321,14 @@ void port_fps_observe(void)
     if (tick==last) return;
     last=tick;
     int particles=0;
-    int index=*(int *)0x0829E308;
+    int index=*(int *)PS2_HOST(0x29E308);
     for (int i=0;i<64 && index>=0 && index<64;i++) {
-        int n=*(int *)(0x0867E180+index*0x2860+0x2850);
+        int n=*(int *)(PS2_HOST(0x67E180)+index*0x2860+0x2850);
         if (n>0 && n<100000) particles+=n;
-        index=*(int *)(0x0871F980+index*12+8);
+        index=*(int *)(PS2_HOST(0x71F980)+index*12+8);
     }
     for (int i=0;i<10;i++) {
-        unsigned char *r=(unsigned char *)(0x082AF2C0+i*0x7BD0);
+        unsigned char *r=(unsigned char *)(PS2_HOST(0x2AF2C0)+i*0x7BD0);
         float *p=(float *)(r+0x4270), *v=(float *)(r+0x4180);
         float speed=sqrtf(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
         /* Read the owner's active clip, rather than a potentially stopped pedal
@@ -337,30 +337,30 @@ void port_fps_observe(void)
         int animation_slot=19+func_0012D300(r);
         unsigned char *track=*(unsigned char **)(r+0x1E40+0x14+animation_slot*16+4);
         unsigned char *owner=*(unsigned char **)(r+0x1E40+0x14+3*16);
-        if ((uintptr_t)owner>=0x08000000 && (uintptr_t)owner<0x0A000000) {
+        if ((uintptr_t)owner>=PS2_HOST(0) && (uintptr_t)owner<PS2_HOST(PS2_RAM_SIZE)) {
             unsigned char *list=*(unsigned char **)(owner+0x24);
-            if ((uintptr_t)list>=0x08000000 && (uintptr_t)list<0x0A000000) {
+            if ((uintptr_t)list>=PS2_HOST(0) && (uintptr_t)list<PS2_HOST(PS2_RAM_SIZE)) {
                 unsigned char *active_track=*(unsigned char **)(list+8);
-                if ((uintptr_t)active_track>=0x08000000 && (uintptr_t)active_track<0x0A000000) {
+                if ((uintptr_t)active_track>=PS2_HOST(0) && (uintptr_t)active_track<PS2_HOST(PS2_RAM_SIZE)) {
                     track=active_track;
                     animation_slot=-1;
                 }
             }
         }
         float anim=-1;
-        if ((uintptr_t)track>=0x08000000 && (uintptr_t)track<0x0A000000) {
-            int now=*(int *)0x0829E160, start=*(int *)(track+0x14);
+        if ((uintptr_t)track>=PS2_HOST(0) && (uintptr_t)track<PS2_HOST(PS2_RAM_SIZE)) {
+            int now=*(int *)PS2_HOST(0x29E160), start=*(int *)(track+0x14);
             int elapsed=track[0x28] ? now-start : start;
             anim=port_animation_fields((float)elapsed)* *(float *)(track+0x1C)+ *(float *)(track+0x18);
             unsigned char *range=*(unsigned char **)(track+4);
-            if ((uintptr_t)range>=0x08000000 && (uintptr_t)range<0x0A000000) {
+            if ((uintptr_t)range>=PS2_HOST(0) && (uintptr_t)range<PS2_HOST(PS2_RAM_SIZE)) {
                 float lo=*(float *)(range+4),hi=*(float *)(range+8);
                 if (hi>lo) anim=(anim-lo)/(hi-lo);
             }
         }
         fprintf(out,"%d,%d,%d,%.8g,%.8g,%.8g,%.8g,%u,%d,%u,%d,%u,%u,%.8g,%d,%d,%llu,%u,%d,%.8g,%.8g\n",
                 tick,port_fps(),i,p[0],p[1],p[2],speed,r[0x7990],*(int *)(r+0x7994),
-                *(unsigned char *)(0x0843EF18+i),*(int *)(0x0843EEDC+4*i),
+                *(unsigned char *)(PS2_HOST(0x43EF18)+i),*(int *)(PS2_HOST(0x43EEDC)+4*i),
                 (r[0x4098]>>2)&1,r[0x6390],anim,animation_slot,particles,(unsigned long long)race_steps,
                 r[0x4414]|r[0x4494]<<2,*(short *)(r+0x4564),*(float *)(r+0x2E98),*(float *)(r+0x7A78));
     }

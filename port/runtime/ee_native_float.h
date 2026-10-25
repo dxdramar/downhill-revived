@@ -58,6 +58,14 @@ PS2_NATIVE float ps2_native_fdiv(float a, float b)
     return ps2_native_dtof((double)a / (double)b);
 }
 
+#ifdef __wasm__
+/* wasm has no rounding modes: the Mac host does the operation at round-to-nearest, FPCR restored
+   after it (port/mac/fenv.c). The wasm code's own float operations run in the host's FPCR mode,
+   round toward zero like the EE (wasm2c makes them plain C). */
+#define PS2_NATIVE_DOUBLE(name, insn) \
+    __attribute__((import_module("host"), import_name(#name))) double name##_host(double, double); \
+    PS2_NATIVE double name(double a, double b) { return name##_host(a, b); }
+#else
 /* One SSE2 double operation at round-to-nearest, MXCSR restored after it. */
 #define PS2_NATIVE_DOUBLE(name, insn) \
     PS2_NATIVE double name(double a, double b) \
@@ -69,6 +77,7 @@ PS2_NATIVE float ps2_native_fdiv(float a, float b)
                          : "+x"(a) : "m"(saved), "m"(nearest), "x"(b)); \
         return a; \
     }
+#endif
 PS2_NATIVE_DOUBLE(ps2_native_dadd, "addsd")
 PS2_NATIVE_DOUBLE(ps2_native_dsub, "subsd")
 PS2_NATIVE_DOUBLE(ps2_native_dmul, "mulsd")

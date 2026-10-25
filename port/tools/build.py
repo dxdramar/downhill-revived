@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import data, eefloat, pctarget, transform  # noqa: E402
+import data, eefloat, pctarget, transform, wasmir  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import patches  # noqa: E402  (port/patches.py)
 
@@ -34,10 +34,10 @@ if a.show is None:
 
 CLANG = ['clang', '--target=' + pctarget.TARGET, '-c', '-O' + a.opt, '-w', '-ferror-limit=0', '-fno-builtin',
          '-fno-strict-aliasing', '-fwrapv', '-fno-delete-null-pointer-checks',
-         '-malign-double',  # 64-bit fields 8-aligned in structs, as on the EE
+         # -malign-double: 64-bit fields 8-aligned in structs, as on the EE;
          # single-precision SSE math, no fused multiply-add: results that don't depend on the
          # optimizer or the machine (x87 keeps excess precision), as lockstep multiplayer needs
-         '-msse2', '-mfpmath=sse', '-ffp-contract=off',
+         *pctarget.ARCH_FLAGS, '-ffp-contract=off',
          # gcc 2.95 accepted these; clang makes them errors by default
          '-Wno-error=incompatible-pointer-types', '-Wno-error=int-conversion',
          '-Wno-error=incompatible-function-pointer-types', '-Wno-error=implicit-function-declaration',
@@ -125,6 +125,10 @@ def build(path):
         ir = eefloat.rewrite(align_quadword_objects(p.stdout))[0]  # EE float semantics (finding 026)
     except ValueError as e:
         return rel, [(0, str(e))]
+    if pctarget.WASM:  # image labels at their PS2 addresses; the IR kept for link_mac.py's renames
+        ir = wasmir.absolute_globals(ir)
+        with open(obj[:-2] + '.ll', 'w', encoding='utf-8', newline='\n') as f:
+            f.write(ir)
     p = subprocess.run(CLANG + ['-x', 'ir', '-', '-o', obj], input=ir,
                        capture_output=True, text=True, encoding='utf-8', errors='replace')
     return rel, [] if not p.returncode else [(0, 'clang (IR): %s' % p.stderr.strip()[-200:])]

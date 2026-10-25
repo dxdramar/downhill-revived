@@ -476,7 +476,7 @@ void host_movie_start(const char *name, int audio)
     uint32_t lsn, size;
     const char *iso = getenv("DHD_ISO");
     if ((uintptr_t)name < 0x02000000u)  /* a PS2 address left in the data image: its host copy */
-        name = (const char *)(uintptr_t)(0x08000000u + (uintptr_t)name);
+        name = (const char *)(uintptr_t)PS2_HOST((uintptr_t)name);
     movie_close();
     started = 0;
     if (!iso || !cdvd_find(name, &lsn, &size)) {

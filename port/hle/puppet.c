@@ -33,16 +33,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "../runtime/memory.h"
 
-#define RIDERS ((uint8_t *)0x082AF2C0)          /* D_002AF2C0: 10 riders */
+#define RIDERS ((uint8_t *)PS2_HOST(0x2AF2C0))    /* D_002AF2C0: 10 riders */
 #define RIDER_SIZE 0x7BD0
 #define NRIDERS 10
 int hle_online_race_riders(void);  /* online.c: the riders in the online race (computer riders off: fewer) */
-#define RACE_CLOCK (*(volatile int32_t *)0x0843EEC8)  /* ticks since GO in phase 2 */
-#define RACE_PHASE (*(volatile int32_t *)0x0843F348)  /* on the race screen: 1 countdown, 2-4 race */
-#define MENU (*(volatile int32_t *)0x0829DED8)        /* 9: the race screen */
+#define RACE_CLOCK (*(volatile int32_t *)PS2_HOST(0x43EEC8))  /* ticks since GO in phase 2 */
+#define RACE_PHASE (*(volatile int32_t *)PS2_HOST(0x43F348))  /* on the race screen: 1 countdown, 2-4 race */
+#define MENU (*(volatile int32_t *)PS2_HOST(0x29DED8))        /* 9: the race screen */
 #define RACING (MENU == 9 && RACE_PHASE >= 2 && RACE_PHASE <= 4)  /* func_0016B5A8 */
-#define CAMERA0_RIDER (*(uint8_t *volatile *)0x0837ED14)  /* D_0037EA60[0] +0x2B4 */
+#define CAMERA0_RIDER (*(uint8_t *volatile *)PS2_HOST(0x37ED14))  /* D_0037EA60[0] +0x2B4 */
 
 #define FIELD(r, off, type) (*(type *)((r) + (off)))
 #define PAD_AT 0x1174    /* virtual pad (+0xFE0) +0x194: this tick's 25 actions, last tick's, timers */

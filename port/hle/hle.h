@@ -11,8 +11,13 @@
 
 #include "memory.h"
 
-/* Defines a C function under the retail name of the SDK function it replaces. */
+/* Defines a C function under the retail name of the SDK function it replaces (with the target's
+   C symbol prefix: Win32's "_", none on the Mac's wasm32). */
+#ifdef __wasm__
+#define RETAIL(name) __asm__(#name)
+#else
 #define RETAIL(name) __asm__("_" #name)
+#endif
 
 /* Logs to stderr; DHD_LOG set in the environment turns on the verbose messages. */
 void hle_log(const char *fmt, ...);

@@ -11,9 +11,14 @@
 #include "present.h"
 #include "gpu_win32.h"
 #include "capture.h"
+#include "../runtime/memory.h"
 #include "../hle/hle.h"
 #include "../hle/text_input.h"
 #include "../hle/splash.h"
+#ifndef _WIN32
+#include <time.h>
+#include "mac_gpu.h"
+#endif
 
 static HWND window;
 static ID3D11Device *device;
@@ -24,11 +29,13 @@ static unsigned buffer_width, buffer_height;
 static uint32_t pixels[1024 * 1024];
 static int initialized, disabled, resize_pending;
 static volatile LONG window_closed;
+#ifdef _WIN32
 /* Laptops with two graphics chips run a program they don't know on the integrated one, which may
    lack what the renderers need (double-precision shaders, gpu.c); these exports ask the NVIDIA and
    AMD drivers for the dedicated chip, as most PC games do. */
 __declspec(dllexport) DWORD NvOptimusEnablement = 1;
 __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+#endif
 /* Presentation for low latency and variable refresh (round 38, finding 052): a flip-model chain
    that may tear (G-SYNC/FreeSync show each picture when presented; the port's own limiter paces
    them, kernel.c) and holds at most one frame (the frame-latency waitable object, else the
@@ -37,6 +44,7 @@ static UINT swap_flags;
 static HANDLE latency_waitable;
 static volatile LONG latency_armed;
 
+#ifdef _WIN32
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     /* Flip chains need ResizeBuffers after window/fullscreen transitions,
@@ -69,6 +77,8 @@ static DWORD WINAPI window_thread(void *arg)
     return 0;
 }
 
+#endif
+
 static void release_presentation_device(void)
 {
     if (context) { ID3D11DeviceContext_Release(context); context = NULL; }
@@ -76,6 +86,7 @@ static void release_presentation_device(void)
     if (device) { ID3D11Device_Release(device); device = NULL; }
 }
 
+#ifdef _WIN32
 /* DXGI wants a swap chain out of exclusive fullscreen before it goes. */
 static void leave_fullscreen(void)
 {
@@ -286,6 +297,46 @@ void gs_window_apply(void)
     resize_pending = 1;
 }
 
+#else
+/* DHD_WINDOW on the Mac (finding 075): windowed (DHD_WINDOW_WIDTH x DHD_WINDOW_HEIGHT points,
+   896x672) or, borderless and fullscreen alike, the whole screen in a fullscreen space. */
+static uint32_t window_mode(uint32_t *width, uint32_t *height)
+{
+    const char *mode = getenv("DHD_WINDOW"), *w = getenv("DHD_WINDOW_WIDTH"), *h = getenv("DHD_WINDOW_HEIGHT");
+    *width = w && atoi(w) > 0 ? (uint32_t)atoi(w) : 896;
+    *height = h && atoi(h) > 0 ? (uint32_t)atoi(h) : 672;
+    return mode && (!strcmp(mode, "borderless") || !strcmp(mode, "fullscreen")) ? 1 : 0;
+}
+
+IDXGISwapChain *dhd_mac_swap_chain(uint32_t width, uint32_t height);  /* port/mac/d3d11_mac.c */
+
+/* The window (port/mac/native/window.m) and Direct3D 11 on Metal (port/mac/d3d11_mac.c). */
+static int init(void)
+{
+    uint32_t width, height, mode = window_mode(&width, &height);
+    char adapter[128];
+    if (!gpu_window_open(width, height, mode)) return 0;
+    window = (HWND)1;
+    D3D_FEATURE_LEVEL level;
+    if (FAILED(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION, &device, &level,
+                                 &context)) || !(swapchain = dhd_mac_swap_chain(640, 448)))
+        return 0;
+    gpu_adapter_name(adapter, sizeof adapter);
+    hle_log("gs: Direct3D 11 on Metal, %s\n", adapter);
+    if (!gs_gpu_init(&gs, device, context)) return 0;
+    resize_pending = 1;
+    return 1;
+}
+
+void gs_window_apply(void)
+{
+    uint32_t width, height, mode = window_mode(&width, &height);
+    if (!window) return;
+    gpu_window_mode(width, height, mode);
+    resize_pending = 1;
+}
+#endif
+
 /* The picture's filter and shape changed (DHD_PRESENT_FILTER, DHD_ASPECT): native renderer only. */
 void gs_present_options_apply(void)
 {
@@ -396,6 +447,7 @@ static void capture(unsigned width, unsigned height, int gpu_frame)
 
 volatile uint32_t gs_presented_frames;
 
+#ifdef _WIN32
 /* The swap chain's creation flags, which ResizeBuffers must repeat. */
 UINT gs_swap_chain_flags(void) { return swap_flags; }
 
@@ -442,6 +494,26 @@ void gs_pump_messages(void)
     if (window_closed) exit(0);
 }
 
+#else
+UINT gs_swap_chain_flags(void) { return 0; }
+void gs_frame_latency_wait(void) {}
+HRESULT gs_present(IDXGISwapChain *chain) { return IDXGISwapChain_Present(chain, 0, 0); }
+volatile int gs_native_view;
+void gs_window_title(const char *utf8)
+{
+    if (window) gpu_window_title(utf8);
+}
+void gs_window_close(void)
+{
+    if (window) gpu_window_close();
+    else exit(0);
+}
+void gs_pump_messages(void)
+{
+    if (window && gpu_window_closed()) exit(0);
+}
+#endif
+
 /* DHD_BENCH=first-last times the wall clock between consecutive fields of that virtual-field
    window (run with DHD_FRAME_CLOCK=1 for an unpaced measurement) and prints one summary line
    at the last field; DHD_BENCH_EXIT=1 then ends the process. */
@@ -463,10 +535,14 @@ static void bench_threads(int end, unsigned fields, double wall)
     static unsigned count;
     double now[MAX];
     const char *now_names[MAX];
+#ifdef _WIN32
     FILETIME created, exited, kernel, user;
     GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user);
     double process = (((uint64_t)kernel.dwHighDateTime << 32 | kernel.dwLowDateTime) +
                       ((uint64_t)user.dwHighDateTime << 32 | user.dwLowDateTime)) * 1e-7;
+#else
+    double process = (double)clock() / CLOCKS_PER_SEC;
+#endif
     unsigned n = host_thread_cpu(now_names, now, MAX);
     if (!end) {
         count = n; process_before = process;
@@ -612,7 +688,7 @@ void gs_vsync(void)
         fields++;
         double now = host_wall_seconds(), elapsed = now - profile_start;
         if (elapsed >= 5) {
-            unsigned frames = *(volatile unsigned *)0x0829E10C;
+            unsigned frames = *(volatile unsigned *)PS2_HOST(0x29E10C);
             if (frames >= previous_frames)
                 fprintf(stderr, "profile: %.2f fields/s, %.2f menu frames/s, %.2f display-buffer changes/s\n", fields / elapsed,
                         (frames - previous_frames) / elapsed, (gs_presented_frames - previous_presented) / elapsed);

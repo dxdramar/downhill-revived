@@ -18,12 +18,12 @@ usage: python port/tools/recomp.py NAME...   (normally run by port/tools/link.py
 import glob, json, os, re, subprocess, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pctarget import LABEL_PREFIX as P, TARGET  # noqa: E402
+from pctarget import BUILD, LABEL_PREFIX as P, TARGET, WASM  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ASM = os.path.join(ROOT, 'asm', 'nonmatchings', 'text')
-SRC = os.path.join(ROOT, 'build', 'port', 'src')
-OUT = os.path.join(ROOT, 'build', 'port', 'recomp')
+SRC = os.path.join(ROOT, 'build', BUILD, 'src')
+OUT = os.path.join(ROOT, 'build', BUILD, 'recomp')
 
 GPR_NAMES = ['zero', 'at', 'v0', 'v1', 'a0', 'a1', 'a2', 'a3', 't0', 't1', 't2', 't3', 't4', 't5', 't6',
              't7', 's0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 't8', 't9', 'k0', 'k1', 'gp', 'sp',
@@ -906,6 +906,17 @@ def translate(name, recompiled, sigs):
     return fn
 
 
+def address_declaration(prefix, s):
+    """A declaration whose address is symbol s's. On the Mac (wasm32) a function's address is its
+    table index, so a function must be declared one; data labels are PS2 addresses there
+    (wasmir.py) and stay arrays."""
+    if WASM:
+        import wasmir
+        if wasmir.address(s) is None:
+            return 'extern void %s%s(void) __asm__("%s");' % (prefix, c_ident(s), s)
+    return 'extern char %s%s[] __asm__("%s%s");' % (prefix, c_ident(s), P, s)
+
+
 def write(name, recompiled, sigs):
     fn = translate(name, recompiled, sigs)
     out = ['/* %s recompiled from its MIPS code by port/tools/recomp.py: generated, do not edit. */' % name,
@@ -914,7 +925,7 @@ def write(name, recompiled, sigs):
         out.append('#include "fps.h"')
     out.append('')
     for s in sorted(fn.symbols):
-        out.append('extern char A_%s[] __asm__("%s%s");' % (c_ident(s), P, s))
+        out.append(address_declaration('A_', s))
     for c in sorted(fn.callees):
         if c in recompiled:
             out.append('void rc_%s(void);' % c)
@@ -990,7 +1001,7 @@ def write_scalar_dispatch(sigs=None, path=None):
     lines=['/* Generated scalar callback dispatcher; do not edit. */',
            '#include "recomp.h"','#include "quad_abi.h"']
     for name in sorted(selected):
-        lines.append('extern char scalar_%s[] __asm__("%s%s");' % (c_ident(name),P,name))
+        lines.append(address_declaration('scalar_', name))
     lines += ['int ps2_recomp_scalar_call(uintptr_t target) {']
     for name,sig in sorted(selected.items()):
         args,store=marshal(sig)

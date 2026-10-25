@@ -755,7 +755,16 @@ def fix_abi_calls(text, relative, sites=None):
     return render(0, len(data)).decode('utf-8')
 
 
+def host_types(text):
+    """Spell the PS2 va_list and size_t as the host's types: char * and unsigned int on 32-bit
+    Windows, but distinct types on wasm32 (port/tools/pctarget.py), where clang's builtins
+    insist on them."""
+    text = text.replace('typedef char *va_list;', 'typedef __builtin_va_list va_list;')
+    return re.sub(r'(\boperator new(?:\[\])?\()unsigned int\b', r'\1__SIZE_TYPE__', text)
+
+
 def transform(text, cpp=False, label_prefix='', image=None):
+    text = host_types(text)
     text = rewrite_long(sound_signatures(rewrite_minmax(rewrite_asm(fix_strings(text)))))
     text = dma_stores(text)
     text = hoist_asm_labels(split_merged_globals(text))

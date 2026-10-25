@@ -9,11 +9,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#ifdef _WIN32
 #include <io.h>        /* _get_osfhandle */
 #include <commdlg.h>  /* the file-open dialog's struct; comdlg32 itself is loaded when needed */
+#endif
 
 #include "ps2asm.h"
 
+#ifdef _WIN32
 /* Where the game thread is: its registers, the code addresses on its stack (no frame
    pointers, so likely return addresses, some stale; build/port/link/dhd.map names them) and the
    recompiled code's registers. */
@@ -102,6 +105,8 @@ void __fastcall __security_check_cookie(uintptr_t cookie)
     ExitProcess(3);
 }
 
+#endif
+
 /* vfprintf that checks each %s pointer first (the game's debug prints get bad ones). */
 void host_safe_vprint(FILE *f, const char *fmt, va_list ap)
 {
@@ -136,6 +141,7 @@ void host_safe_vprint(FILE *f, const char *fmt, va_list ap)
     }
 }
 
+#ifdef _WIN32
 void host_backtrace(void)
 {
     CONTEXT c = {0};
@@ -425,6 +431,8 @@ static XInputGetStateFn xinput(void)
     return fn;
 }
 
+#endif
+
 /* The DualShock 2's motors (pad.c, scePadSetActDirect): the small one on or off, the large one
    0-255. A pad gets them as its high- and low-frequency motors (SDL: every pad with motors,
    gamepad.c; without SDL, XInput pads only), unless DHD_VIBRATION=0 (dhd.ini "vibration", the
@@ -441,14 +449,17 @@ void host_pad_vibrate(int port, int light, int heavy)
         gamepad_vibrate(port, light, heavy);
         return;
     }
+#ifdef _WIN32
     xinput();
     if (!xinput_set) return;
     XVibration v = {(WORD)((heavy & 255) * 257), (WORD)(light ? 0xFFFF : 0)};
     xinput_set((DWORD)port, &v);
+#endif
 }
 
 
 
+#ifdef _WIN32
 /* Sony controllers (DualSense, DualSense Edge, DualShock 4) through raw HID: Windows doesn't
    offer them as XInput pads. A reader thread opens the first one it finds, over USB or
    Bluetooth, and keeps its latest input report; it looks again every second while none is
@@ -605,6 +616,8 @@ static int sony_read(SonyState *out)
     return 1;
 }
 
+#endif
+
 /* The pressure byte of each pressure-sensitive button, in the DualShock 2's order. */
 static const uint16_t pressure_order[12] = {PAD_RIGHT, PAD_LEFT, PAD_UP, PAD_DOWN, PAD_TRIANGLE, PAD_CIRCLE,
                                             PAD_CROSS, PAD_SQUARE, PAD_L1, PAD_R1, PAD_L2, PAD_R2};
@@ -619,8 +632,9 @@ static uint8_t stick(SHORT v, int flip)
 
 /* The game's controls are in riding mode (D_0029E290, func_00220550): keyboard.c moves the left
    stick with the arrows then, and the d-pad in menus. */
-static int riding_controls(void) { return *(volatile int32_t *)0x0829E290 != 0; }
+static int riding_controls(void) { return *(volatile int32_t *)PS2_HOST(0x29E290) != 0; }
 
+#ifdef _WIN32
 /* The keyboard (layout: keyboard.c), only while a window of this process (the game's) is in
    front, and not while Alt, Ctrl or a Windows key is held, so Alt+Tab, Alt+Enter, Ctrl+Esc and
    the like stay the system's. A key let go elsewhere is let go here too. */
@@ -652,6 +666,22 @@ static void keyboard_merge(HostPad *out)
     keyboard_pad(down, riding_controls(), host_seconds(), out);
 }
 
+#else
+/* The keyboard (layout: keyboard.c), while the game's window is in front (port/mac's
+   keyboard state is empty otherwise); letters by their place on the keyboard, as the Mac's key
+   codes are. */
+static void keyboard_merge(HostPad *out)
+{
+    uint8_t down[256] = {0};
+    int count;
+    const uint8_t *keys = keyboard_keys(&count);
+    for (int i = 0; i < count; i++)
+        if (text_input_key_allowed(keys[i]) && (GetAsyncKeyState(keys[i]) & 0x8000)) down[keys[i]] = 1;
+    keyboard_pad(down, riding_controls(), host_seconds(), out);
+}
+
+#endif
+
 /* DHD_KEYS (tests, finding 059): fake keys from the race's GO on, as DHD_RACE_PAD, through the
    keyboard's mapping; each change is logged with the steering the rider got from it. */
 static void keys_script(HostPad *out)
@@ -666,9 +696,9 @@ static void keys_script(HostPad *out)
     }
     keyboard_pad(down, riding_controls(), host_seconds(), out);
     /* the human rider (D_002AF2C0 + 0x50130) and its steering input, right +0x1190, left +0x1194 */
-    uintptr_t rider = *(volatile uint32_t *)0x082FF3F0;
+    uintptr_t rider = *(volatile uint32_t *)PS2_HOST(0x2FF3F0);
     int right = 0, left = 0;
-    if (rider >= 0x400000 && rider < 0x0A000000) right = *(volatile int32_t *)(rider + 0x1190), left = *(volatile int32_t *)(rider + 0x1194);
+    if (rider >= 0x400000 && rider < PS2_HOST(PS2_RAM_SIZE)) right = *(volatile int32_t *)(rider + 0x1190), left = *(volatile int32_t *)(rider + 0x1194);
     static int last[5] = {-1};
     int now[5] = {out->buttons, out->left_x, out->left_y, right, left};
     if (memcmp(now, last, sizeof now)) {
@@ -724,6 +754,7 @@ void host_pad_read(int port, HostPad *out)
         host_pad_device(port, out);
 }
 
+#ifdef _WIN32
 /* Without SDL (DHD_SDL=0, or it didn't start): XInput pad `port`, else (port 0) a DualSense or
    DualShock 4 over raw HID. */
 static void direct_pad(int port, HostPad *out)
@@ -796,6 +827,12 @@ static void test_pad_merge(HostPad *out)
     if (word) out->buttons |= *word;
 }
 
+#else
+/* The Mac reads every controller through SDL (gamepad.c). */
+static void direct_pad(int port, HostPad *out) { (void)port; (void)out; }
+static void test_pad_merge(HostPad *out) { (void)out; }
+#endif
+
 /* Player `port`'s controller (SDL, gamepad.c, else XInput and the Sony pads directly: one of the
    two, never both, so a pad isn't read twice), and for player 1 the keyboard as well, merged. */
 void host_pad_device(int port, HostPad *out)
@@ -807,6 +844,7 @@ void host_pad_device(int port, HostPad *out)
     if (port == 0) keyboard_merge(out), test_pad_merge(out);
 }
 
+#ifdef _WIN32
 void *host_fiber_main(void) { return ConvertThreadToFiberEx(NULL, FIBER_FLAG_FLOAT_SWITCH); }
 void *host_fiber_create(void (*fn)(void *), void *arg)
 {
@@ -900,6 +938,8 @@ void host_wait_wall(double seconds)
     while (host_wall_seconds() < seconds)
         YieldProcessor();
 }
+
+#endif
 
 /* The startup movies (func_001EBFD8: the logos, then the attract movie) play unless dhd.ini's
    skip_movies (DHD_SKIP_MOVIES, PC SETTINGS > Skip Movies) is nonzero; movies play natively
@@ -1224,6 +1264,7 @@ done:
     return problem;
 }
 
+#ifdef _WIN32
 typedef BOOL(WINAPI *GetOpenFileNameFn)(OPENFILENAMEA *);
 
 /* The file-open dialog for a disc image (comdlg32 loaded here: no new import); 0 if cancelled. */
@@ -1249,6 +1290,14 @@ static int choose_disc(char *path, size_t size)
     o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
     return open_file(&o) && path[0];
 }
+
+#else
+/* The open panel for a disc image; 0 if cancelled. */
+static int choose_disc(char *path, size_t size)
+{
+    return mac_choose_file("Choose your Downhill Domination (USA) disc image", "iso", path, (uint32_t)size);
+}
+#endif
 
 /* Before the relaunch (only the first of the two dhd.exe asks): the disc image dhd.ini names
    (iso), if it is there and is Downhill Domination (USA); else a message, a file-open dialog,

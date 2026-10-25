@@ -158,7 +158,11 @@ static inline __attribute__((always_inline)) __m128 operand4(__m128 value)
     __m128i bits = _mm_castps_si128(value), magnitude = _mm_and_si128(bits, _mm_set1_epi32(0x7fffffff));
     __m128i large = _mm_cmpgt_epi32(magnitude, _mm_set1_epi32(0x7f7fffff));
     __m128 result = _mm_castsi128_ps(_mm_xor_si128(bits, _mm_and_si128(large, _mm_xor_si128(magnitude, _mm_set1_epi32(0x7f7fffff)))));
+#ifdef __wasm__
+    __asm__("" : "+r"(result));  /* wasm: "r" holds a v128 too (finding 075) */
+#else
     __asm__("" : "+x"(result));
+#endif
     return result;
 }
 

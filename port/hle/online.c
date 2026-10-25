@@ -35,8 +35,8 @@
 #include <bcrypt.h>
 #pragma comment(lib, "bcrypt")
 
-#define EE32(a) (*(volatile int32_t *)(uintptr_t)(0x08000000u + (a)))
-#define EE_PTR(a) ((void *)(uintptr_t)(0x08000000u + (a)))
+#define EE32(a) (*(volatile int32_t *)(uintptr_t)PS2_HOST(a))
+#define EE_PTR(a) ((void *)(uintptr_t)PS2_HOST(a))
 enum { MENU = 0x29DED8, PHASE = 0x43F348, SETUP = 0x4B25A0, LEVEL_NAME = 0x4BD4DC, TRACK_NAMES = 0x26EE50 };
 enum { LOAD_MENU = 9, FLYBY_PHASE = 5 };  /* on the race screen: 5 the flight over the track, 1 countdown, 2-4 race */
 /* Retail func_0016B5A8: the flyby (5) is not a running race. */
@@ -348,7 +348,11 @@ static void build_version(char *out, size_t size)
     uint8_t digest[32], buf[65536];
     DWORD n;
     snprintf(out, size, "dhd-port " DHD_VERSION " unknown");
+#ifdef __wasm__
+    if (!mac_exe_path(path, sizeof path)) return;  /* the Mac's GetModuleFileNameA names the data folder */
+#else
     GetModuleFileNameA(NULL, path, sizeof path);
+#endif
     HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (f == INVALID_HANDLE_VALUE) return;
     if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, 0) == 0) {

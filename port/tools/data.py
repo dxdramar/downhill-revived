@@ -24,7 +24,7 @@ usage: python port/tools/data.py   (normally run by port/tools/link.py)"""
 import ast, bisect, glob, os, re, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pctarget import LABEL_PREFIX as P, PS2_RAM_BASE  # noqa: E402
+from pctarget import BUILD, LABEL_PREFIX as P, PS2_RAM_BASE  # noqa: E402
 from recomp import data_entries  # noqa: E402
 import recomp  # noqa: E402
 
@@ -33,7 +33,7 @@ VUTEXT = (0x263BC0, 0x26DD00)  # vram of .vutext (config/splat.yaml)
 RAM_END = 0x2000000
 GP = 0x2A40F0  # _gp
 SCRATCHPAD = (0x70000000, 0x70004000)
-OUT = os.path.join(ROOT, 'build', 'port', 'data')
+OUT = os.path.join(ROOT, 'build', BUILD, 'data')
 FILES = ['data.data.s', 'rodata.rodata.s', 'gcc_except_table.gcc_except_table.s', 'sdata.sdata.s',
          'sbss.sbss.s', 'bss.bss.s']  # PS2 address order
 ZERO = ('sbss.sbss.s', 'bss.bss.s')

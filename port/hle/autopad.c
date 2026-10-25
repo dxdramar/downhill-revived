@@ -80,9 +80,9 @@ int autopad_read(const char *script, double seconds, uint16_t *buttons)
    race clock (60 per second, one per PS2 vsync), which restarts at the countdown (menu 9, race
    phase 1) and at GO (phase 2, still running in phase 3). The port's own vsyncs don't serve:
    under its virtual clock it spends more of them per game frame than the PS2. */
-#define RACE_MENU (*(volatile int32_t *)0x0829DED8)
-#define RACE_PHASE (*(volatile int32_t *)0x0843F348)
-#define RACE_CLOCK (*(volatile int32_t *)0x0843EEC8)
+#define RACE_MENU (*(volatile int32_t *)PS2_HOST(0x29DED8))
+#define RACE_PHASE (*(volatile int32_t *)PS2_HOST(0x43F348))
+#define RACE_CLOCK (*(volatile int32_t *)PS2_HOST(0x43EEC8))
 static int race_started[2], race_clock;
 static unsigned long long race_field = ~0ull;
 static volatile unsigned long long race_pad_field;
@@ -99,10 +99,10 @@ static int race_sync_menu(void)
 static int race_sync_ready(void)
 {
     if (!getenv("DHD_RACE_SYNC_UNLOCKED")) return 1;
-    return *(volatile uint32_t *)0x084346B4 == 0x035FFFFFu &&
-           *(volatile uint32_t *)0x082B6E68 == 0 &&
-           *(volatile uint32_t *)0x082B6E6C == 0 &&
-           *(volatile uint32_t *)0x082B6E70 == 0;
+    return *(volatile uint32_t *)PS2_HOST(0x4346B4) == 0x035FFFFFu &&
+           *(volatile uint32_t *)PS2_HOST(0x2B6E68) == 0 &&
+           *(volatile uint32_t *)PS2_HOST(0x2B6E6C) == 0 &&
+           *(volatile uint32_t *)PS2_HOST(0x2B6E70) == 0;
 }
 
 #ifdef _WIN32
@@ -146,12 +146,12 @@ static void nav_dump(const char *name, const char *when)
     FILE *f = fopen(path, "wb");
     if (!f) return;
     graphics_settle();
-    fwrite((const void *)0x08000000, 32u << 20, 1, f);
+    fwrite((const void *)(uintptr_t)PS2_HOST(0), 32u << 20, 1, f);
     fclose(f);
     fprintf(stderr, "compare: nav dump %s\n", path);
 }
 
-static unsigned nav_read(unsigned address) { return *(volatile uint32_t *)(0x08000000u + (address & 0x1FFFFFCu)); }
+static unsigned nav_read(unsigned address) { return *(volatile uint32_t *)PS2_HOST(address & 0x1FFFFFCu); }
 
 int autopad_nav(const char *script, unsigned long long field, uint16_t *buttons)
 {
@@ -215,7 +215,7 @@ void race_sync_vsync(unsigned long long field)
     if (frame_log < 0) frame_log = getenv("DHD_RACE_FRAMELOG") != NULL;
     if (frame_log)
         fprintf(stderr, "compare: frame field=%llu frame=%d loadbar=%d menu=%d phase=%d clock=%d\n", field,
-                *(volatile int32_t *)0x0829E10C, *(volatile int32_t *)0x08663108, RACE_MENU, RACE_PHASE, race_clock);
+                *(volatile int32_t *)PS2_HOST(0x29E10C), *(volatile int32_t *)PS2_HOST(0x663108), RACE_MENU, RACE_PHASE, race_clock);
     for (int i = 0; i < 2; i++)
         if (!race_started[i] && race_sync_menu() && RACE_PHASE == i + 1) {
             race_started[i] = 1;
@@ -267,7 +267,7 @@ static void race_sync_dump(char anchor, long value)
     FILE *f = fopen(path, "wb");
     if (!f) return;
     graphics_settle();
-    fwrite((const void *)0x08000000, 32u << 20, 1, f);
+    fwrite((const void *)(uintptr_t)PS2_HOST(0), 32u << 20, 1, f);
     fwrite((const void *)0x70000000, 16u << 10, 1, f);
     fclose(f);
     fprintf(stderr, "compare: race dump %s clock=%d\n", path, race_clock);

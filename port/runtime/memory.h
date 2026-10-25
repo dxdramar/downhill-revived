@@ -4,7 +4,11 @@
 
 #include <stdint.h>
 
+#ifdef __wasm__
+#define PS2_RAM_BASE 0u            /* the Mac's wasm memory is the PS2 address space (finding 075) */
+#else
 #define PS2_RAM_BASE 0x08000000u   /* host address of PS2 address 0 (port/tools/pctarget.py) */
+#endif
 #define PS2_RAM_SIZE 0x02000000u
 #define PS2_IMAGE_START 0x263BC0u  /* .vutext, the first byte of the data image */
 #define PS2_IMAGE_END 0x29DCF0u    /* the end of .sdata: .sbss and .bss after it are zero */
@@ -14,6 +18,8 @@
    pointers. Below it Windows has its own memory before the program starts. */
 #define PS2_LOW_VIEW 0x00400000u
 
+/* Host address of a fixed PS2 RAM address, as a number. */
+#define PS2_HOST(addr) (PS2_RAM_BASE + (uint32_t)(addr))
 /* Host pointer of a PS2 RAM address (cached, uncached or a DMA address). */
 #define PS2_PTR(addr) ((void *)(uintptr_t)(PS2_RAM_BASE + ((uint32_t)(addr) & 0x01FFFFFFu)))
 
