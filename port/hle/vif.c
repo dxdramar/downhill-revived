@@ -40,7 +40,7 @@ enum { NOP = 0x00, STCYCL = 0x01, OFFSET = 0x02, BASE = 0x03, ITOP = 0x04, STMOD
 #define VU1_MICRO 0x11008000u
 #define VU1_DATA 0x1100C000u
 static uint8_t *micro(int unit) {
-#if defined(_WIN64) || defined(__x86_64__)
+#if defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
     if (unit!=1) abort();
     return GUEST(VU1_MICRO);
 #else
@@ -48,7 +48,7 @@ static uint8_t *micro(int unit) {
 #endif
 }
 static uint32_t *data_mem(int unit) {
-#if defined(_WIN64) || defined(__x86_64__)
+#if defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
     if (unit!=1) abort();
     return GUEST(VU1_DATA);
 #else
@@ -221,7 +221,7 @@ static void capture_representative(unsigned addr, unsigned top, unsigned itop)
 
 static void run_micro(Vif *v, uint32_t addr)
 {
-#if !defined(_WIN64) && !defined(__x86_64__)
+#if !defined(_WIN64) && !defined(__x86_64__) && !defined(__aarch64__)
     if (v->unit == 0) {
         if (ps2_vu0_run(&ps2, addr))
             hle_log("vif0: microprogram at 0x%X failed\n", addr);
@@ -596,7 +596,7 @@ void vif_feed(int unit, const uint32_t *words, uint32_t n)
 {
 #if defined(DHD_VIF0_ONLY)
     if (unit!=0) abort();
-#elif defined(_WIN64) || defined(__x86_64__)
+#elif defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
     if (unit!=1) abort();
 #endif
     Vif *v = &vif[unit];

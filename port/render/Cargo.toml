@@ -14,7 +14,7 @@ version = "1.0.0"
 edition = "2021"
 rust-version = "1.97"
 license = "GPL-3.0-or-later"
-description = "The GS renderer of the PC port on wgpu (native: DX12/Vulkan; browser: WebGPU)"
+description = "The GS renderer of the PC port on wgpu (native: DX12/Vulkan/Metal; browser: WebGPU)"
 publish = false
 
 [lib]
@@ -23,7 +23,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-native = ["wgpu/std", "wgpu/parking_lot", "wgpu/dx12", "wgpu/vulkan", "wgpu/wgsl", "dep:pollster"]
+native = ["wgpu/std", "wgpu/parking_lot", "wgpu/dx12", "wgpu/vulkan", "wgpu/metal", "wgpu/wgsl", "dep:pollster"]
 web = ["wgpu/std", "wgpu/webgpu", "wgpu/wgsl", "wgpu/fragile-send-sync-non-atomic-wasm",
        "dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:wasm-bindgen-futures"]
 test-hooks = []

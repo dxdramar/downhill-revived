@@ -832,7 +832,10 @@ def recompile_objects(objs, rewrite_aliases):
 # ---- the link ---------------------------------------------------------------------------------
 
 def builtins_lib():
-    """compiler-rt's builtins from the wasi-sdk (the same code for every wasm32 OS)."""
+    """compiler-rt's builtins from the wasi-sdk (the same code for every wasm32 OS); WASI_BUILTINS
+    names the file where the sysroot isn't in a wasi-sdk (Homebrew's wasi-runtimes on a Mac)."""
+    if os.environ.get('WASI_BUILTINS'):
+        return os.environ['WASI_BUILTINS']
     return os.path.normpath(os.path.join(WASI, '..', '..', 'lib', 'clang', '23', 'lib', 'wasm32-unknown-wasi',
                                          'libclang_rt.builtins.a'))
 
@@ -865,7 +868,7 @@ def wasm_link(objs, out, allow_all, host_syms):
 
 def wasm_link_once(objs, out, allow_all, host_syms):
     rsp = os.path.join(OUT, 'objs.rsp')
-    write(rsp, ''.join(o.replace(os.sep, '/') + '\n' for o in objs))
+    write(rsp, ''.join('"%s"\n' % o.replace(os.sep, '/') for o in objs))  # quoted: paths may hold spaces
     cmd = ['wasm-ld', '--no-entry', '--no-stack-first', '--global-base=%d' % STACK_BASE,
            '-z', 'stack-size=%d' % STACK_SIZE, '--initial-memory=%d' % INITIAL_MEMORY,
            '--max-memory=%d' % MAX_MEMORY, '--export=__main_argc_argv', '--export=__stack_pointer',

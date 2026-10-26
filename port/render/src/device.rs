@@ -107,7 +107,21 @@ pub fn instance_flags(o: &DeviceOptions) -> wgpu::InstanceFlags {
     f
 }
 
-/// The backend `o` asks for: DX12, or Vulkan for `DHDR_DEV_VULKAN`.
+/// The window surface's format, and the present pipelines' target: RGBA8, except on Apple
+/// platforms, whose CAMetalLayer offers no RGBA8 (BGRA8 holds the same values in another order).
+#[cfg(target_vendor = "apple")]
+pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+#[cfg(not(target_vendor = "apple"))]
+pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// The backend `o` asks for: DX12, or Vulkan for `DHDR_DEV_VULKAN`; Metal on Apple platforms.
+#[cfg(target_vendor = "apple")]
+pub fn backends(_o: &DeviceOptions) -> wgpu::Backends {
+    wgpu::Backends::METAL
+}
+
+/// The backend `o` asks for: DX12, or Vulkan for `DHDR_DEV_VULKAN`; Metal on Apple platforms.
+#[cfg(not(target_vendor = "apple"))]
 pub fn backends(o: &DeviceOptions) -> wgpu::Backends {
     if o.flags & DHDR_DEV_VULKAN != 0 {
         wgpu::Backends::VULKAN

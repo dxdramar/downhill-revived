@@ -26,7 +26,12 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <sys/ucontext.h>  /* ucontext_t without the deprecated routines */
+#else
 #include <ucontext.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -43,6 +48,11 @@
 #define CTX_IP(c) ((uintptr_t)(c)->Eip)
 #define CTX_SP(c) ((uintptr_t)(c)->Esp)
 #endif
+#elif defined(__APPLE__) && defined(__aarch64__)
+/* macOS crash/dump signals hand a ucontext_t whose machine context is a pointer. */
+#define CTX_IP(c) ((uintptr_t)(c)->uc_mcontext->__ss.__pc)
+#define CTX_SP(c) ((uintptr_t)(c)->uc_mcontext->__ss.__sp)
+typedef ucontext_t CONTEXT;
 #else
 /* Linux crash/dump signals hand a ucontext_t. Only x86_64 is supported. */
 #define CTX_IP(c) ((uintptr_t)(c)->uc_mcontext.gregs[REG_RIP])
@@ -144,7 +154,7 @@ static void snapshot(Snapshot *out, const CONTEXT *c)
         if (value >= lo && value < hi) out->returns[out->count++] = value;
     }
 #endif
-#if defined(_WIN64) || defined(__x86_64__)
+#if defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
     memcpy(out->registers,published_registers,sizeof out->registers);
 #else
     out->registers[0] = ps2.gpr[29].w[0]; out->registers[1] = ps2.gpr[31].w[0];
@@ -166,6 +176,12 @@ static void print_snapshot(const Snapshot *s)
     fprintf(stderr, "  eip %08lX eax %08lX ebx %08lX ecx %08lX edx %08lX esi %08lX edi %08lX esp %08lX\n",
             c->Eip, c->Eax, c->Ebx, c->Ecx, c->Edx, c->Esi, c->Edi, c->Esp);
 #endif
+#elif defined(__APPLE__) && defined(__aarch64__)
+    const struct __darwin_arm_thread_state64 *r = &c->uc_mcontext->__ss;
+    fprintf(stderr, "  pc %016llX lr %016llX sp %016llX fp %016llX x0 %016llX x1 %016llX x2 %016llX x3 %016llX\n",
+            (unsigned long long)r->__pc, (unsigned long long)r->__lr, (unsigned long long)r->__sp,
+            (unsigned long long)r->__fp, (unsigned long long)r->__x[0], (unsigned long long)r->__x[1],
+            (unsigned long long)r->__x[2], (unsigned long long)r->__x[3]);
 #else
     const greg_t *r = c->uc_mcontext.gregs;
     fprintf(stderr, "  rip %016llX rax %016llX rbx %016llX rcx %016llX rdx %016llX rsi %016llX rdi %016llX rsp %016llX\n",
@@ -382,6 +398,8 @@ void host_thread_name(const char *name)
 #ifdef _WIN32  /* the OS's name too, for debuggers and profilers */
     WCHAR wide[64];
     if (MultiByteToWideChar(CP_UTF8, 0, name, -1, wide, 64)) SetThreadDescription(GetCurrentThread(), wide);
+#elif defined(__APPLE__)
+    pthread_setname_np(name);  /* macOS names the calling thread only */
 #else
     pthread_setname_np(pthread_self(), name);
 #endif
@@ -406,6 +424,15 @@ unsigned host_thread_cpu(const char **names, double *seconds, unsigned max)
         names[n] = named[i].name;
         seconds[n++] = (((uint64_t)kernel.dwHighDateTime << 32 | kernel.dwLowDateTime) +
                         ((uint64_t)user.dwHighDateTime << 32 | user.dwLowDateTime)) * 1e-7;
+#elif defined(__APPLE__)  /* no thread CPU clocks: Mach's thread_info */
+        thread_basic_info_data_t info;
+        mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+        if (!named[i].name || thread_info(pthread_mach_thread_np(named[i].handle), THREAD_BASIC_INFO,
+                                          (thread_info_t)&info, &count) != KERN_SUCCESS)
+            continue;
+        names[n] = named[i].name;
+        seconds[n++] = info.user_time.seconds + info.system_time.seconds +
+                       (info.user_time.microseconds + info.system_time.microseconds) / 1e6;
 #else
         clockid_t id;
         struct timespec t;
@@ -1219,6 +1246,28 @@ static int choose_disc(char *path, size_t size)
 }
 #endif
 
+#if defined(__APPLE__)
+/* macOS (finding 091): Windows' message box and file-open dialog, as host_disc_ready uses them,
+   over the host's (dialogs_apple.m). */
+#include "../host/host_mac.h"
+enum { MB_OK = 0, MB_OKCANCEL = 1, MB_RETRYCANCEL = 5, MB_ICONWARNING = 0x30, MB_ICONINFORMATION = 0x40,
+       MB_SETFOREGROUND = 0x10000, IDOK = 1, IDCANCEL = 2, IDRETRY = 4 };
+#define INVALID_FILE_ATTRIBUTES 0xFFFFFFFFu
+#define GetFileAttributesA(path) (host_path_exists(path) ? 0u : INVALID_FILE_ATTRIBUTES)
+static int MessageBoxA(void *owner, const char *text, const char *title, unsigned flags)
+{
+    (void)owner;
+    int buttons = (flags & 0xF) == MB_RETRYCANCEL ? HOST_MAC_RETRY_CANCEL : (flags & 0xF) == MB_OKCANCEL ? HOST_MAC_OK_CANCEL
+                : HOST_MAC_OK;
+    int yes = host_mac_alert(title, text, buttons, (flags & 0xF0) == MB_ICONWARNING);
+    return !yes ? IDCANCEL : buttons == HOST_MAC_RETRY_CANCEL ? IDRETRY : IDOK;
+}
+static int choose_disc(char *path, size_t size)
+{
+    return host_mac_choose_file("Choose your Downhill Domination (USA) disc image", "iso", path, size);
+}
+#endif
+
 /* Before the relaunch (only the first of the two dhd.exe asks): the disc image dhd.ini names
    (iso), if it is there and is Downhill Domination (USA); else a message, a file-open dialog,
    the choice checked and saved to dhd.ini. DHD_ISO in the environment overrides the file and is
@@ -1231,7 +1280,7 @@ int host_disc_ready(void)
     const char *iso = getenv("DHD_ISO");
     const char *problem = iso ? disc_problem(iso, why, sizeof why) : NULL;
     if (iso && !problem) return 0;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
     if (!iso)
         snprintf(message, sizeof message, "Choose your Downhill Domination (USA) disc image.\n\n"
                  "The game plays from your own copy of the disc, as an .iso file (SCUS-97177). "
@@ -1300,7 +1349,7 @@ int host_service_host_relaunch_reserving(uint32_t a0, uint32_t a1) {
 
 /* Wall-clock pacing is shared by the EE producer and native presenter. */
 #define WORK_SAMPLES 300
-#if defined(_WIN64) || defined(__x86_64__)
+#if defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
 #define FIELD_SECONDS pacing_period
 #else
 #include "../include/fps.h"
@@ -1600,13 +1649,13 @@ void host_pacing_input(void) { frame_began=host_wall_seconds(); }
 
 /* Native diagnostics consume published scalar state, never call the module
    from graphics, presenter or device OS threads. i686 keeps its direct clock. */
-#if defined(_WIN64) || defined(__x86_64__)
+#if defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
 uint64_t kernel_vsync_count;
 static double module_seconds;
 double host_seconds(void) { return module_seconds; }
 #endif
 void host_frame_context(uint64_t field, double seconds) {
-#if defined(_WIN64) || defined(__x86_64__)
+#if defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
     kernel_vsync_count=field; module_seconds=seconds;
 #else
     (void)field; (void)seconds;
@@ -1619,14 +1668,14 @@ void host_frame_registers(uint32_t address) {
 
 double host_pacing_period(void) { return pacing_period; }
 
-#if defined(_WIN64) || defined(__x86_64__)
+#if defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
 static double published_aspect;
 static int published_flat_limit;
 double host_widescreen_aspect(void) { return published_aspect; }
 int host_widescreen_flat_limit(void) { return published_flat_limit; }
 #endif
 void host_frame_video(double aspect, int flat_limit) {
-#if defined(_WIN64) || defined(__x86_64__)
+#if defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
     published_aspect=aspect; published_flat_limit=flat_limit;
 #else
     (void)aspect; (void)flat_limit;

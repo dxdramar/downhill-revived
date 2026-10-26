@@ -90,6 +90,9 @@ it unchanged (finding 088, CL3).
   (`--renderer rust` is still accepted; the JS/WebGPU renderer `www/gpu.js` is gone, finding 088
   CL5). Speed toward 60 fps: finding 087.
 - Linux headless x64 (`build_host64_linux.py`, WSL, `DHD_HEADLESS=1`): for state traces only.
+- macOS on Apple Silicon (`build_host64_macos.py`, `package_mac.py` for the `.app`): the same
+  core, the POSIX host, SDL3 and the Rust renderer on Metal; menus, races, movies, sound, the
+  memory card and online run at 59.9 fields/s on an M1 Pro (finding 091).
 - Retired (finding 088): the 32-bit i686 build (`link.py`, `build_clean.py`, the x87/FP-trap
   runtime), the Direct3D 11 renderer, the C wgpu-native renderer and the browser's JS renderer.
   No D3D11 fallback.

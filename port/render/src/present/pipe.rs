@@ -46,7 +46,7 @@ fn build(gpu: &Gpu) -> wgpu::RenderPipeline {
             entry_point: Some("present_fragment"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: crate::device::SURFACE_FORMAT, // the window surface's
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],

@@ -47,6 +47,7 @@
 #include "texpack.h"
 #else  /* texpack.h names Direct3D; these are its calls made here, over its opaque entry */
 typedef struct TexPackEntry TexPackEntry;
+int texpack_open(const void *device, uint64_t video_memory);
 TexPackEntry *texpack_find(const Gs *g, unsigned ctxt);
 void *texpack_view(TexPackEntry *e, uint64_t field);
 void texpack_field(uint64_t field);

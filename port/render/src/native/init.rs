@@ -377,8 +377,14 @@ fn pipeline_layout(gpu: &Gpu, uniform: &wgpu::BindGroupLayout, group1: &wgpu::Bi
 /// blend, or (depth) no colour target and Depth32Float written with Always.
 fn fullscreen_pipeline(gpu: &Gpu, module: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, entry: &str,
                        depth: bool) -> wgpu::RenderPipeline {
+    fullscreen_pipeline_to(gpu, module, layout, entry, depth, wgpu::TextureFormat::Rgba8Unorm)
+}
+
+/// `fullscreen_pipeline` into a target of `format` (the present pass: the window surface's).
+fn fullscreen_pipeline_to(gpu: &Gpu, module: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, entry: &str,
+                          depth: bool, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
     let target = [Some(wgpu::ColorTargetState {
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format,
         blend: None,
         write_mask: wgpu::ColorWrites::ALL,
     })];
@@ -490,7 +496,8 @@ impl Objects {
 
         let blit_pipe = fullscreen_pipeline(gpu, &main, &blit_pipeline_layout, "native_blit", false);
         let upload_pipe = fullscreen_pipeline(gpu, &main, &blit_pipeline_layout, "native_upload_alpha", false);
-        let present_pipe = fullscreen_pipeline(gpu, &main, &draw_layout, "present_pixel", false);
+        let present_pipe = fullscreen_pipeline_to(gpu, &main, &draw_layout, "present_pixel", false,
+                                                  crate::device::SURFACE_FORMAT);
         let grow_pipe = fullscreen_pipeline(gpu, &main, &grow_pipeline_layout, "native_grow_depth", true);
         let scanout_pipe = compute_pipeline(gpu, &main, &scanout_pipeline_layout, "native_scanout");
         let convert_pipe = compute_pipeline(gpu, &main, &convert_pipeline_layout, "native_convert");

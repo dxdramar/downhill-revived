@@ -14,7 +14,11 @@
    game's texture. The renderer makes the texture (replace_texture.h). */
 #define COBJMACROS
 #define WIN32_LEAN_AND_MEAN
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "../host/win32_compat.h"
+#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>

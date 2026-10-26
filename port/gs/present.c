@@ -7,7 +7,8 @@
 #include "../host/win32_compat.h"
 #endif
 /* The window is SDL's (W11): created on the SDL thread (host/sdl_host.c), its events come there too.
-   The renderer's surface takes the window's HWND (SDL_PROP_WINDOW_WIN32_HWND_POINTER). */
+   The renderer's surface takes the window's HWND (SDL_PROP_WINDOW_WIN32_HWND_POINTER); on macOS
+   the CAMetalLayer of an SDL Metal view. */
 #if defined(_WIN32) || defined(DHD_HAVE_SDL)
 #include <SDL3/SDL.h>
 #define PRESENT_SDL 1
@@ -92,6 +93,9 @@ static void make_window(void *arg)
     /* A minimised start: SDL applies its window state when the window shows, so it must know
        (show_window); otherwise it restores the window then. */
     if (start_minimised()) flags |= SDL_WINDOW_MINIMIZED;
+#ifdef __APPLE__
+    flags |= SDL_WINDOW_METAL | SDL_WINDOW_HIGH_PIXEL_DENSITY;  /* the renderer's Metal layer, in real pixels */
+#endif
     sdl_window = SDL_CreateWindow("Downhill Revived", s->w, s->h, flags);  /* s->w x s->h: the client area */
     if (!sdl_window) {
         fprintf(stderr, "gs: SDL window (%s)\n", SDL_GetError());
@@ -165,6 +169,65 @@ static int init(void)
     if (fullscreen) gs_window_apply();  /* the whole monitor */
     return 1;
 }
+#elif defined(__APPLE__) && defined(PRESENT_SDL)
+/* macOS (finding 091): the window is SDL's, on the main thread (sdl_host.c's sdl_host_main); the
+   renderer (gpu_rust.c: wgpu on Metal) draws into the CAMetalLayer of an SDL Metal view on it.
+   Every window call goes to that thread (sdl_host_run). Borderless and fullscreen are macOS's
+   own fullscreen (a Space of its own, the menu bar hidden). */
+static SDL_MetalView metal_view;
+static void *metal_layer;
+
+static void make_metal_view(void *unused)
+{
+    (void)unused;
+    metal_view = SDL_Metal_CreateView(sdl_window);
+    metal_layer = metal_view ? SDL_Metal_GetLayer(metal_view) : NULL;
+}
+
+static void show_window(void *unused)
+{
+    (void)unused;
+    SDL_ShowWindow(sdl_window);
+    SDL_RaiseWindow(sdl_window);
+}
+
+/* The window's drawable size in pixels (gpu_rust.c's GetClientRect): 0 x 0 while minimised. */
+void gs_window_pixels(unsigned *width, unsigned *height)
+{
+    int w = 0, h = 0;
+    if (sdl_window && !(SDL_GetWindowFlags(sdl_window) & SDL_WINDOW_MINIMIZED))
+        SDL_GetWindowSizeInPixels(sdl_window, &w, &h);
+    *width = w > 0 ? (unsigned)w : 0;
+    *height = h > 0 ? (unsigned)h : 0;
+}
+
+static int init(void)
+{
+    const char *mode = getenv("DHD_WINDOW"), *width = getenv("DHD_WINDOW_WIDTH"), *height = getenv("DHD_WINDOW_HEIGHT");
+    int fullscreen = mode && (!strcmp(mode, "borderless") || !strcmp(mode, "fullscreen"));
+    WindowSpec spec = {0, 0, width && atoi(width) > 0 ? atoi(width) : 896, height && atoi(height) > 0 ? atoi(height) : 672, 0};
+    if (getenv("DHD_HEADLESS")) return 0;  /* headless runs never open a window */
+    sdl_host_run(make_window, &spec);  /* on the main thread: Cocoa's windows live there */
+    if (!sdl_window) return 0;
+    sdl_host_run(make_metal_view, NULL);
+    if (!metal_layer) {
+        fprintf(stderr, "gs: no Metal view on the window (%s)\n", SDL_GetError());
+        return 0;
+    }
+    splash_step(75, "Preparing the graphics...");
+    if (!gs_gpu_init(&gs)) return 0;
+    if (!gs_gpu_surface(&gs, metal_layer)) {
+        hle_log("gs: the renderer has no surface on the window\n");
+        gs_gpu_destroy(&gs);
+        return 0;
+    }
+    surface = 1;
+    hle_log("gs: WebGPU presentation (%s)\n", gs_gpu_backend_name(&gs));
+    sdl_host_run(show_window, NULL);
+    splash_close();
+    if (fullscreen) gs_window_apply();
+    return 1;
+}
 #elif defined(PRESENT_SDL)
 /* No presentation device on this host (Linux: the renderer has no surface here yet). The SDL
    window still opens for input, and audio still plays; rendering stays headless, so init reports
@@ -217,6 +280,26 @@ void gs_window_apply(void)
     }
     resize_pending = 1;
 }
+#elif defined(__APPLE__) && defined(PRESENT_SDL)
+static void window_apply(void *unused)
+{
+    (void)unused;
+    const char *mode = getenv("DHD_WINDOW"), *width = getenv("DHD_WINDOW_WIDTH"), *height = getenv("DHD_WINDOW_HEIGHT");
+    if (mode && (!strcmp(mode, "borderless") || !strcmp(mode, "fullscreen"))) {
+        SDL_SetWindowFullscreen(sdl_window, true);  /* the desktop's mode: no mode change */
+    } else {
+        SDL_SetWindowFullscreen(sdl_window, false);
+        SDL_SetWindowSize(sdl_window, width && atoi(width) > 0 ? atoi(width) : 896, height && atoi(height) > 0 ? atoi(height) : 672);
+        SDL_SetWindowPosition(sdl_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    }
+}
+
+void gs_window_apply(void)
+{
+    if (!sdl_window || !surface) return;
+    sdl_host_run(window_apply, NULL);  /* Cocoa: on the main thread */
+    resize_pending = 1;
+}
 #else
 void gs_window_apply(void) {}
 #endif
@@ -224,7 +307,7 @@ void gs_window_apply(void) {}
 /* The picture's filter and shape changed (DHD_PRESENT_FILTER, DHD_ASPECT): native renderer only. */
 void gs_present_options_apply(void)
 {
-#ifdef _WIN32
+#if defined(_WIN32) || (defined(__APPLE__) && defined(PRESENT_SDL))
     if (sdl_window && gs_gpu_native(&gs)) gs_native_present_options(&gs);
 #endif
 }
@@ -549,6 +632,8 @@ void gs_vsync(void)
         RECT client = {0};
         GetClientRect(window, &client);
         client_width = (unsigned)client.right; client_height = (unsigned)client.bottom;
+#elif defined(__APPLE__) && defined(PRESENT_SDL)
+        gs_window_pixels(&client_width, &client_height);
 #endif
         double due, began;
         pacing_handed(&due, &began);

@@ -342,9 +342,9 @@ pub unsafe extern "C" fn dhdr_surface_create(w: *const DhdrWindow, present_flags
         log_err(E, "NULL window");
         return std::ptr::null_mut();
     };
-    if w.kind != DHDR_WINDOW_WIN32 {
-        log_err(E, &format!("window kind {} is not supported here (version 1: WIN32; the browser's \
-                             canvas surface comes from dhdr_web_surface)", w.kind));
+    if w.kind != DHDR_WINDOW_WIN32 && w.kind != DHDR_WINDOW_METAL_LAYER {
+        log_err(E, &format!("window kind {} is not supported here (WIN32 and METAL_LAYER; the \
+                             browser's canvas surface comes from dhdr_web_surface)", w.kind));
         return std::ptr::null_mut();
     }
     match Surface::create(gpu, w, present_flags) {

@@ -1,4 +1,4 @@
-/* The POSIX host of host_api.h (port/host): the module's OS services on Linux
+/* The POSIX host of host_api.h (port/host): the module's OS services on Linux and macOS
    (and other POSIX hosts where the noted calls exist). Counterpart of
    host_win32.c; the module sees only host_api.h. Fibers, guest RAM, the FP
    mode, the guest-safe callback contracts and the thread name live in the
@@ -12,7 +12,16 @@
 
 #include <dirent.h>
 #include <dlfcn.h>
+#if defined(__APPLE__)
+#include <limits.h>
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
+#include <mach-o/dyld.h>
+#include <mach-o/getsect.h>
+#else
 #include <elf.h>
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -47,9 +56,25 @@ void host_error_box(const char *title, const char *message)
     fflush(stderr);
 }
 
+/* The program's own path: /proc/self/exe, or on macOS dyld's answer with links resolved. */
+static ssize_t self_path(char *out, size_t size)
+{
+#if defined(__APPLE__)
+    char raw[PATH_MAX], real[PATH_MAX];
+    uint32_t n = sizeof raw;
+    if (!size || _NSGetExecutablePath(raw, &n) || !realpath(raw, real)) return -1;
+    size_t len = strlen(real);
+    if (len >= size) len = size - 1;
+    memcpy(out, real, len);
+    return (ssize_t)len;
+#else
+    return readlink("/proc/self/exe", out, size);
+#endif
+}
+
 unsigned host_exe_path(char *out, unsigned size)
 {
-    ssize_t n = readlink("/proc/self/exe", out, size ? size - 1 : 0);
+    ssize_t n = self_path(out, size ? size - 1 : 0);
     if (n < 0) {
         if (size) out[0] = 0;
         return 0;
@@ -62,14 +87,31 @@ void host_exit(int code) { _exit(code); }
 
 int host_display_hz(void) { return 0; }
 
+#if defined(__aarch64__)
+/* The module speaks MXCSR (host_api.h); arm64 keeps the same state in FPCR and FPSR:
+     MXCSR RC (bits 13-14: nearest, down, up, zero)  <->  FPCR RMode (bits 22-23: RN, RP, RM, RZ)
+     MXCSR FZ (bit 15) or DAZ (bit 6)                 <->  FPCR FZ (bit 24: inputs and results)
+     MXCSR flags IE ZE OE UE PE DE (bits 0-5)         <->  FPSR IOC DZC OFC UFC IXC IDC
+   The exception masks read as set: arm64 cores don't trap float exceptions. msr fpcr
+   serializes the core and the VU and EE modes set MXCSR around much of their work, mostly to
+   what it already is, so a register is written only when it changes. */
+enum { RMODE_SHIFT = 22, FPCR_FZ = 1u << 24 };
+static const uint32_t rc_of_rmode[4] = {0, 2, 1, 3};  /* RN, RP (up), RM (down), RZ -> MXCSR RC */
+static const uint32_t rmode_of_rc[4] = {0, 2, 1, 3};  /* nearest, down, up, zero -> RMode */
+#endif
+
 unsigned host_fp_csr(void)
 {
 #if defined(__x86_64__)
     return _mm_getcsr();
 #elif defined(__aarch64__)
-    uint64_t v;
-    __asm__ volatile("mrs %0, fpcr" : "=r"(v));
-    return (unsigned)v;
+    uint64_t c, s;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(c));
+    __asm__ volatile("mrs %0, fpsr" : "=r"(s));
+    unsigned x = 0x1F80u | rc_of_rmode[(c >> RMODE_SHIFT) & 3] << 13;
+    if (c & FPCR_FZ) x |= 0x8040u;
+    x |= (s & 1) | (s & 2) << 1 | (s & 4) << 1 | (s & 8) << 1 | (s & 16) << 1 | (s & 0x80) >> 6;
+    return x;
 #endif
 }
 
@@ -78,8 +120,16 @@ void host_fp_set_csr(unsigned csr)
 #if defined(__x86_64__)
     _mm_setcsr(csr);
 #elif defined(__aarch64__)
-    uint64_t v = csr;
-    __asm__ volatile("msr fpcr, %0\n\tisb" :: "r"(v) : "memory");
+    uint64_t was, c, old, s;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(was));
+    c = was & ~((3ull << RMODE_SHIFT) | FPCR_FZ);
+    c |= (uint64_t)rmode_of_rc[(csr >> 13) & 3] << RMODE_SHIFT;
+    if (csr & 0x8040u) c |= FPCR_FZ;
+    if (c != was) __asm__ volatile("msr fpcr, %0\n\tisb" :: "r"(c) : "memory");
+    __asm__ volatile("mrs %0, fpsr" : "=r"(old));
+    s = old & ~0x9Full;
+    s |= (csr & 1) | (csr & 4) >> 1 | (csr & 8) >> 1 | (csr & 16) >> 1 | (csr & 32) >> 1 | (csr & 2) << 6;
+    if (s != old) __asm__ volatile("msr fpsr, %0" :: "r"(s) : "memory");
 #endif
 }
 
@@ -113,8 +163,21 @@ static FILE *file_slot[FILE_SLOTS + 1];
 
 static FILE *file_of(HostFile h) { return h > 0 && h <= FILE_SLOTS ? file_slot[h] : NULL; }
 
+/* The module's paths are Windows-style (mc.c: saves\\card1\\BASCUS-97177\\...); on POSIX each
+   backslash is a separator, so a card file lands in its folder instead of one file named with
+   backslashes. Into buf (HOST_PATH_MAX), which is returned. */
+static const char *posix_path(const char *path, char *buf)
+{
+    size_t i = 0;
+    for (; path[i] && i + 1 < HOST_PATH_MAX; i++) buf[i] = path[i] == '\\' ? '/' : path[i];
+    buf[i] = 0;
+    return buf;
+}
+#define POSIX_PATH(p) char p##_posix[HOST_PATH_MAX]; p = posix_path(p, p##_posix)
+
 HostFile host_file_open(const char *path, unsigned mode)
 {
+    POSIX_PATH(path);
     FILE *f;
     int slot;
     /* The module's WASI open shim has no preopened directories, so an absolute POSIX
@@ -237,6 +300,7 @@ static char dir_path[DIR_SLOTS + 1][4096];
 
 HostDir host_dir_open(const char *path, HostDirEntry *first)
 {
+    POSIX_PATH(path);
     struct dirent *fd;
     DIR *d;
     int slot;
@@ -280,17 +344,23 @@ void host_dir_close(HostDir d)
 
 int host_path_is_dir(const char *path)
 {
+    POSIX_PATH(path);
     struct stat st;
     return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
 int host_path_exists(const char *path)
 {
+    POSIX_PATH(path);
     struct stat st;
     return stat(path, &st) == 0;
 }
 
-int host_dir_create(const char *path) { return mkdir(path, 0777) == 0 || errno == EEXIST ? 1 : 0; }
+int host_dir_create(const char *path)
+{
+    POSIX_PATH(path);
+    return mkdir(path, 0777) == 0 || errno == EEXIST ? 1 : 0;
+}
 
 /* ---- time and waiting: the wall clock (the game's own clock is virtual, kernel.c) ---- */
 double host_wall_seconds(void)
@@ -314,6 +384,30 @@ void host_sleep_ms(unsigned ms)
 
 /* Until a monotonic-clock time: sleep to a millisecond before it (timer slack
    is left to the kernel), then a yield-instruction spin. */
+#if defined(__APPLE__)
+/* The frame pacing waits to the millisecond, and macOS coalesces the timers of a process it
+   doesn't think is interactive (one started from a shell in the background woke ~6 ms late). For
+   the sleep alone the thread is a time-constraint one, whose timers aren't coalesced (tens of
+   microseconds late); none of the game's work runs at that priority. */
+static void precise_sleep(const struct timespec *t)
+{
+    static mach_timebase_info_data_t base;
+    if (!base.denom) mach_timebase_info(&base);
+    thread_port_t self = pthread_mach_thread_np(pthread_self());
+    uint32_t ms = (uint32_t)(1000000ull * base.denom / base.numer);
+    thread_time_constraint_policy_data_t rt = {16 * ms, ms / 2, 16 * ms, 1};
+    int precise = thread_policy_set(self, THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&rt,
+                                    THREAD_TIME_CONSTRAINT_POLICY_COUNT) == KERN_SUCCESS;
+    nanosleep(t, NULL);
+    if (precise) {
+        thread_standard_policy_data_t standard = {0};
+        thread_policy_set(self, THREAD_STANDARD_POLICY, (thread_policy_t)&standard, THREAD_STANDARD_POLICY_COUNT);
+    }
+}
+#else
+static void precise_sleep(const struct timespec *t) { nanosleep(t, NULL); }
+#endif
+
 void host_wait_wall(double seconds)
 {
     double left = seconds - host_wall_seconds();
@@ -323,7 +417,7 @@ void host_wait_wall(double seconds)
             t.tv_sec--;
             t.tv_nsec += 1000000000L;
         }
-        if (t.tv_sec >= 0) nanosleep(&t, NULL);
+        if (t.tv_sec >= 0) precise_sleep(&t);
     }
     while (host_wall_seconds() < seconds)
         sched_yield();
@@ -334,8 +428,10 @@ int host_mem_protect(uint32_t at, uint32_t size, int protection)
 {
     /* Page-align the range the way the OS requires; the caller's exact range
        keeps its protection inside it. */
+    static uintptr_t page;  /* 4 KiB on x64, 16 KiB on Apple Silicon */
+    if (!page) page = (uintptr_t)sysconf(_SC_PAGESIZE);
     uintptr_t base = (uintptr_t)GUEST(at);
-    uintptr_t lo = base & ~(uintptr_t)4095, hi = (base + size + 4095) & ~(uintptr_t)4095;
+    uintptr_t lo = base & ~(page - 1), hi = (base + size + page - 1) & ~(page - 1);
     if (hi < base) return 0;
     return mprotect((void *)lo, hi - lo, protection == HOST_MEM_NOACCESS ? PROT_NONE : PROT_READ | PROT_WRITE) == 0;
 }
@@ -438,6 +534,7 @@ int host_thread_detach(void (*fn)(void *), void *arg)
    FILETIME); 1 if it exists. */
 int host_path_info(const char *path, uint64_t *size, uint64_t *write_time)
 {
+    POSIX_PATH(path);
     struct stat st;
     if (stat(path, &st) != 0) return 0;
     *size = (uint64_t)st.st_size;
@@ -445,8 +542,20 @@ int host_path_info(const char *path, uint64_t *size, uint64_t *write_time)
     return 1;
 }
 
-/* dhd64's .text: the section of the image that holds the code, by its ELF
-   program headers (the PE walk's counterpart in host_win32.c). */
+/* dhd64's code: the image's __TEXT segment on macOS, else its .text by the ELF program headers
+   (the PE walk's counterpart in host_win32.c). */
+#if defined(__APPLE__)
+void host_code_range(uintptr_t *lo, uintptr_t *hi)
+{
+    Dl_info info;
+    unsigned long size = 0;
+    *lo = *hi = 0;
+    if (dladdr((void *)host_code_range, &info) && info.dli_fbase) {
+        uint8_t *text = getsegmentdata((const struct mach_header_64 *)info.dli_fbase, "__TEXT", &size);
+        if (text) *lo = (uintptr_t)text, *hi = (uintptr_t)text + size;
+    }
+}
+#else
 void host_code_range(uintptr_t *lo, uintptr_t *hi)
 {
     static uintptr_t base, extent;
@@ -454,7 +563,7 @@ void host_code_range(uintptr_t *lo, uintptr_t *hi)
     *lo = *hi = 0;
     if (!have) {
         char path[4096];
-        ssize_t n = readlink("/proc/self/exe", path, sizeof path - 1);
+        ssize_t n = self_path(path, sizeof path - 1);
         if (n > 0) {
             path[n] = 0;
             FILE *f = fopen(path, "rb");
@@ -486,16 +595,17 @@ void host_code_range(uintptr_t *lo, uintptr_t *hi)
         *hi = base + extent;
     }
 }
+#endif
 
 /* The host process's memory regions (state_trace.c, opt-in: DHD_STATE_NORM=host). */
 void host_memory_regions(void (*visit)(uintptr_t base, uintptr_t end, int host_memory))
 {
     char self[4096], line[1024];
-    ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
+    ssize_t n = self_path(self, sizeof self - 1);
     FILE *maps;
     if (n > 0) self[n] = 0;
     else self[0] = 0;
-    maps = fopen("/proc/self/maps", "r");
+    maps = fopen("/proc/self/maps", "r");  /* none on macOS: no regions (an opt-in diagnostic) */
     if (!maps) return;
     while (fgets(line, sizeof line, maps)) {
         unsigned long lo, hi;

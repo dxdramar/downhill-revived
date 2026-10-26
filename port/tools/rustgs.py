@@ -9,7 +9,9 @@
     python port/tools/rustgs.py tree  [--target T]      # the version gate, printed
     python port/tools/rustgs.py selftest [--keep]       # port/tools/rustgs_selftest.py
 
-Scope: x64 Windows and the browser (wasm32) only; i686 stays on the C renderer (decision D2 = c).
+Scope: x64 Windows, Apple Silicon macOS (aarch64-apple-darwin, Metal; finding 091) and the browser
+(wasm32); i686 stays on the C renderer (decision D2 = c). The macOS library is libdhd_render.a; the
+release-leak checks (check_rust_lib, normalise_objnames) read COFF and run for Windows only.
 
 What every cargo call gets
 --------------------------
@@ -89,8 +91,9 @@ CARGO_TARGETS = (DEVCACHES / 'dhd-cargo')
 SEED = CARGO_TARGETS / 'seed'
 WEB_OUT = ROOT / 'build' / 'web' / 'renderer'
 X64 = 'x86_64-pc-windows-msvc'
+MAC = 'aarch64-apple-darwin'
 WASM = 'wasm32-unknown-unknown'
-TARGETS = (X64, WASM)            # i686 is not built with Rust (D2 = c)
+TARGETS = (X64, MAC, WASM)       # i686 is not built with Rust (D2 = c)
 PROFILES = ('release', 'fixloop')
 FEATURES = ('test-hooks',)       # what a caller may add; native / web are rustgs's own
 REFUSED_FEATURES = ('no-fp-guard',)
@@ -550,7 +553,7 @@ def build(triple, features=(), profile='release', no_cache=False):
     tdir.mkdir(parents=True, exist_ok=True)
     tag = '+'.join(features) or 'default'
     out_dir = WEB_OUT if triple == WASM else tdir / 'rustgs' / triple / profile / tag
-    lib_name = 'dhd_render_bg.wasm' if triple == WASM else 'dhd_render.lib'
+    lib_name = 'dhd_render_bg.wasm' if triple == WASM else 'libdhd_render.a' if triple == MAC else 'dhd_render.lib'
     rep = {'triple': triple, 'profile': profile, 'features': features, 'key': key, 'rustflags': flags,
            'target_dir': str(tdir), 'versions': versions}
     hit = None if no_cache else cache_fetch(key, out_dir)
@@ -573,8 +576,8 @@ def build(triple, features=(), profile='release', no_cache=False):
     if r.returncode:
         raise SystemExit('rustgs: cargo failed (exit %d)' % r.returncode)
     built_dir = tdir / triple / profile
-    raw = built_dir / ('dhd_render.wasm' if triple == WASM else 'dhd_render.lib')
-    inputs_gate(built_dir / 'dhd_render.d')
+    raw = built_dir / ('dhd_render.wasm' if triple == WASM else 'libdhd_render.a' if triple == MAC else 'dhd_render.lib')
+    inputs_gate(built_dir / ('libdhd_render.d' if triple == MAC else 'dhd_render.d'))
     sysroot = Path(tool_version(['rustc', '--print', 'sysroot'], env).strip()) / 'lib' / 'rustlib' / triple / 'lib'
     native_libs = []
     if triple != WASM:
@@ -605,6 +608,14 @@ def build(triple, features=(), profile='release', no_cache=False):
     else:
         lib = out_dir / lib_name
         shutil.copyfile(raw, lib)
+        if triple == MAC:  # a Mach-O archive: the COFF checks below don't read it
+            files[lib_name] = lib
+            if not no_cache:
+                cache_store(key, files, {'native_static_libs': native_libs})
+            rep.update(cache='miss', lib=str(lib), sha256=check_rust_lib.sha256(lib), glue=[],
+                       native_static_libs=native_libs)
+            log('built %s (key %s)' % (rep['lib'], key[:16]))
+            return rep
         renamed = normalise_objnames(lib, tdir)
         if renamed:
             log('%d S_OBJNAME record(s) normalised to target\\...' % renamed)
@@ -626,7 +637,7 @@ def build(triple, features=(), profile='release', no_cache=False):
 
 def library(target=X64, features=(), profile='release'):
     """The built library's path (for link scripts; A1c). 'x64' / 'wasm' are accepted for the triple."""
-    triple = {'x64': X64, 'x86_64': X64, 'wasm': WASM, 'wasm32': WASM}.get(target, target)
+    triple = {'x64': X64, 'x86_64': X64, 'mac': MAC, 'macos': MAC, 'wasm': WASM, 'wasm32': WASM}.get(target, target)
     return Path(build(triple, features, profile)['lib'])
 
 

@@ -27,7 +27,12 @@
 
 /* Each slot's lowest page stays reserved: an overflow faults (the OS fault
    reporter) instead of running into the slot below. */
-enum { SLOTS=64, ROOT=65, STACK_BASE=0x06000000, STACK_BYTES=0x40000, GUARD=0x1000 };
+#if defined(__APPLE__) && defined(__aarch64__)
+enum { GUARD=0x4000 };  /* a whole 16 KiB page: commits round to pages */
+#else
+enum { GUARD=0x1000 };
+#endif
+enum { SLOTS=64, ROOT=65, STACK_BASE=0x06000000, STACK_BYTES=0x40000 };
 enum { NATIVE_STACK=8*1024*1024, NATIVE_GUARD=0x1000 };
 typedef struct {
     void *save_sp; void *stack; void (*fn)(void *); void *arg;
@@ -69,22 +74,40 @@ __asm__(
 "  ud2\n"
 );
 #elif defined(__aarch64__)
-/* x0=&save_sp, x1=new_sp. New fibers enter through fiber_trampoline with
-   x19 holding their Fiber; fiber_entry never returns. */
+/* x0=&save_sp, x1=new_sp. The callee-saved registers of AAPCS64: x19-x28, the frame pair and
+   d8-d15 (the low halves of v8-v15). New fibers enter through fiber_trampoline with x19 holding
+   their Fiber; fiber_entry never returns. Mach-O names carry a leading underscore and have no
+   .type. */
+#if defined(__APPLE__)
+#define FIBER_SYM(name) "_" #name
+#define FIBER_TYPE(name) ""
+#else
+#define FIBER_SYM(name) #name
+#define FIBER_TYPE(name) ".type " #name ",@function\n"
+#endif
 __asm__(
 ".text\n"
-".globl fiber_switch_asm\n"
-".type fiber_switch_asm,@function\n"
-"fiber_switch_asm:\n"
+".p2align 2\n"
+".globl " FIBER_SYM(fiber_switch_asm) "\n"
+FIBER_TYPE(fiber_switch_asm)
+FIBER_SYM(fiber_switch_asm) ":\n"
 "  stp x29, x30, [sp,#-16]!\n"
 "  stp x19, x20, [sp,#-16]!\n"
 "  stp x21, x22, [sp,#-16]!\n"
 "  stp x23, x24, [sp,#-16]!\n"
 "  stp x25, x26, [sp,#-16]!\n"
 "  stp x27, x28, [sp,#-16]!\n"
+"  stp d8, d9, [sp,#-16]!\n"
+"  stp d10, d11, [sp,#-16]!\n"
+"  stp d12, d13, [sp,#-16]!\n"
+"  stp d14, d15, [sp,#-16]!\n"
 "  mov x2, sp\n"
 "  str x2, [x0]\n"
 "  mov sp, x1\n"
+"  ldp d14, d15, [sp],#16\n"
+"  ldp d12, d13, [sp],#16\n"
+"  ldp d10, d11, [sp],#16\n"
+"  ldp d8, d9, [sp],#16\n"
 "  ldp x27, x28, [sp],#16\n"
 "  ldp x25, x26, [sp],#16\n"
 "  ldp x23, x24, [sp],#16\n"
@@ -92,11 +115,11 @@ __asm__(
 "  ldp x19, x20, [sp],#16\n"
 "  ldp x29, x30, [sp],#16\n"
 "  ret\n"
-".globl fiber_trampoline\n"
-".type fiber_trampoline,@function\n"
-"fiber_trampoline:\n"
+".globl " FIBER_SYM(fiber_trampoline) "\n"
+FIBER_TYPE(fiber_trampoline)
+FIBER_SYM(fiber_trampoline) ":\n"
 "  mov x0, x19\n"
-"  bl fiber_entry\n"
+"  bl " FIBER_SYM(fiber_entry) "\n"
 "  brk #0\n"
 );
 #endif
@@ -155,13 +178,14 @@ HostFiber host_fiber_create(void (*fn)(void *),void *arg) {
         slot[6]=fiber_trampoline;
         f->save_sp=(void *)base;
 #elif defined(__aarch64__)
-        /* Six popped register pairs, fp/lr, then the trampoline address;
-           the base stays 16-aligned as the ABI requires. */
-        uintptr_t base=((uintptr_t)map+NATIVE_STACK+NATIVE_GUARD-128)&~15ull;
+        /* What fiber_switch_asm pops, in its order: d8-d15 (slots 0-7), x27/x28, x25/x26,
+           x23/x24, x21/x22 (8-15), x19 = the Fiber and x20 (16-17), then x29 = 0 and x30 =
+           the trampoline (18-19), where ret goes. The base stays 16-aligned as the ABI requires. */
+        uintptr_t base=((uintptr_t)map+NATIVE_STACK+NATIVE_GUARD-160)&~15ull;
         void **slot=(void **)base;
-        for (int k=0;k<8;k++) slot[k]=NULL;
-        slot[8]=f; slot[9]=slot[10]=slot[11]=NULL;
-        slot[12]=fiber_trampoline;
+        for (int k=0;k<20;k++) slot[k]=NULL;
+        slot[16]=f;
+        slot[19]=(void *)fiber_trampoline;
         f->save_sp=(void *)base;
 #endif
         f->active=1;

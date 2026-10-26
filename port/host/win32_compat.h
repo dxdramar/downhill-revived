@@ -17,6 +17,9 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#endif
 
 typedef int32_t LONG;
 typedef uint32_t DWORD;
@@ -321,13 +324,22 @@ static inline HANDLE GetCurrentThread(void) { return win_thread_self; }
 static inline BOOL GetThreadTimes(HANDLE h, FILETIME *created, FILETIME *exited, FILETIME *kernel,
                                   FILETIME *user)
 {
-    clockid_t id;
-    struct timespec t;
     uint64_t ticks;
     if (!h || h->kind != 2) return FALSE;
+#if defined(__APPLE__)  /* no thread CPU clocks: Mach's thread_info */
+    thread_basic_info_data_t info;
+    mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+    if (thread_info(pthread_mach_thread_np(h->thread), THREAD_BASIC_INFO, (thread_info_t)&info, &count) != KERN_SUCCESS)
+        return FALSE;
+    ticks = ((uint64_t)info.user_time.seconds + info.system_time.seconds) * 10000000ULL +
+            ((uint64_t)info.user_time.microseconds + info.system_time.microseconds) * 10ULL;
+#else
+    clockid_t id;
+    struct timespec t;
     if (pthread_getcpuclockid(h->thread, &id) != 0) return FALSE;
     if (clock_gettime(id, &t) != 0) return FALSE;
     ticks = (uint64_t)t.tv_sec * 10000000ULL + (uint64_t)t.tv_nsec / 100ULL;
+#endif
     if (created) created->dwLowDateTime = created->dwHighDateTime = 0;
     if (exited) exited->dwLowDateTime = exited->dwHighDateTime = 0;
     /* No user/kernel split for a thread clock: report it all as user time. */

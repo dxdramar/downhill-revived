@@ -1,11 +1,13 @@
 /* POSIX mapping for guest_memory.c: one PROT_NONE reservation, a memfd RAM
-   section aliased with MAP_FIXED|MAP_SHARED, commit-on-demand with mprotect
+   section (on macOS, which has no memfd, an unlinked POSIX shared memory object) aliased with
+   MAP_FIXED|MAP_SHARED, commit-on-demand with mprotect
    (which preserves contents, like MEM_COMMIT), and a SIGSEGV/SIGBUS handler
    on an alternate stack that reports the guest address and re-raises the
    signal. Policy (which regions are mirrors, what is committed) stays shared.
    Written for this task; no third-party code. */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <execinfo.h>
 #include <signal.h>
 #include <stdint.h>
@@ -29,7 +31,14 @@ void os_fail(const char *what) {
     fprintf(stderr,"host64 memory: %s (%d: %s)\n",what,errno,strerror(errno)); abort();
 }
 uintptr_t os_reserve(void) {
+#if defined(__APPLE__)
+    char name[64];
+    snprintf(name,sizeof name,"/dhd-guest-ram-%d",(int)getpid());
+    ram_fd=shm_open(name,O_RDWR|O_CREAT|O_EXCL,0600);
+    if (ram_fd>=0) shm_unlink(name);  /* the descriptor keeps it; nothing is left behind */
+#else
     ram_fd=memfd_create("dhd-guest-ram",MFD_CLOEXEC);
+#endif
     if (ram_fd<0) return 0;
     if (ftruncate(ram_fd,RAM_SIZE)<0) { close(ram_fd); ram_fd=-1; return 0; }
     /* MAP_NORESERVE: the 8 GiB reservation must not charge swap; committed

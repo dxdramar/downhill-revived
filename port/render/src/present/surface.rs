@@ -3,7 +3,7 @@
 //!
 //! As the retired `gpu_wgpu.c`'s wgpu_surface / surface_configure / wgpu_present (last at
 //! render/rust 3882d5576): a surface on the window
-//! (`DHDR_WINDOW_WIN32`: a = HWND, b = HINSTANCE; kinds 3-6 refused by `ffi.rs`), RGBA8Unorm
+//! (`DHDR_WINDOW_WIN32`: a = HWND, b = HINSTANCE; `DHDR_WINDOW_METAL_LAYER`: a = CAMetalLayer; kinds 3-5 refused by `ffi.rs`), RGBA8Unorm
 //! required; present mode Immediate > Mailbox > Fifo (`DHDR_PRESENT_NO_TEARING`: no Immediate;
 //! `DHDR_PRESENT_VSYNC`: Fifo); desired maximum frame latency 1; alpha Opaque; usage
 //! RENDER_ATTACHMENT, plus COPY_SRC when the surface offers it (`DHDR_SURFACE_COPY_SRC`, for the
@@ -94,14 +94,40 @@ fn write_pixels(gpu: &Gpu, texture: &wgpu::Texture, pixels: &[u32], w: u32, h: u
 }
 
 impl Surface {
-    /// `dhdr_surface_create`: present.wgsl's pipeline, then a surface on the Win32 window.
+    /// `dhdr_surface_create`: present.wgsl's pipeline, then a surface on the window (Win32's
+    /// HWND, or on macOS the CAMetalLayer SDL made for the window's view).
     pub fn create(gpu: &'static Gpu, window: &DhdrWindow, present_flags: u32) -> Result<Surface, String> {
-        if window.kind != DHDR_WINDOW_WIN32 {
+        if window.kind != DHDR_WINDOW_WIN32 && window.kind != DHDR_WINDOW_METAL_LAYER {
             return Err(format!("window kind {} is not supported", window.kind));
         }
         let pipe = PresentPipe::create(gpu).ok_or("no present pipeline")?;
-        let surface = Self::win32(gpu, window)?;
+        let surface = if window.kind == DHDR_WINDOW_METAL_LAYER {
+            Self::metal_layer(gpu, window)?
+        } else {
+            Self::win32(gpu, window)?
+        };
         Self::from_wgpu(gpu, surface, present_flags, pipe)
+    }
+
+    /// A surface on a CAMetalLayer: `window.a` is the layer (SDL_Metal_GetLayer).
+    #[cfg(target_vendor = "apple")]
+    fn metal_layer(gpu: &Gpu, window: &DhdrWindow) -> Result<wgpu::Surface<'static>, String> {
+        if window.a == 0 {
+            return Err("NULL CAMetalLayer".into());
+        }
+        // SAFETY: C keeps the layer (and its view) alive until dhdr_surface_destroy (present.c
+        // destroys the surface before the window).
+        unsafe {
+            gpu.instance
+                .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(window.a as usize as *mut _))
+        }
+        .map_err(|e| format!("create_surface: {e}"))
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    fn metal_layer(gpu: &Gpu, window: &DhdrWindow) -> Result<wgpu::Surface<'static>, String> {
+        let _ = (gpu, window);
+        Err("CAMetalLayer surfaces exist on Apple platforms only".into())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -133,8 +159,8 @@ impl Surface {
     pub fn from_wgpu(gpu: &'static Gpu, surface: wgpu::Surface<'static>, present_flags: u32, pipe: PresentPipe)
                      -> Result<Surface, String> {
         let caps = surface.get_capabilities(&gpu.adapter);
-        if !caps.formats.contains(&wgpu::TextureFormat::Rgba8Unorm) {
-            return Err(format!("the surface has no rgba8unorm (formats {:?})", caps.formats));
+        if !caps.formats.contains(&crate::device::SURFACE_FORMAT) {
+            return Err(format!("the surface has no {:?} (formats {:?})", crate::device::SURFACE_FORMAT, caps.formats));
         }
         let offers = |m: wgpu::PresentMode| caps.present_modes.contains(&m);
         let present_mode = if present_flags & DHDR_PRESENT_VSYNC != 0 {
@@ -175,7 +201,7 @@ impl Surface {
         let (width, height) = (width.min(max), height.min(max));
         self.surface.configure(&self.gpu.device, &wgpu::SurfaceConfiguration {
             usage: self.usage,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: crate::device::SURFACE_FORMAT,
             width,
             height,
             present_mode: self.present_mode,

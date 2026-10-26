@@ -15,6 +15,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include "wasm-rt.h"
 #include "core_host.h"
 #include "memory_layout.h"
@@ -39,7 +42,14 @@ static int commit_range(uint64_t lo, uint64_t hi) {
    1 on success; 0 beyond the memory's current size. */
 int host64_memory_commit(uint64_t at,uint64_t size) {
     if (!owner || at+size>owner->size || at+size<at) return 0;
-    uint64_t lo=at&~0xfffull, hi=(at+size+0xfff)&~0xfffull;
+    /* to the OS's pages: 4 KiB on x64, 16 KiB on Apple Silicon */
+#ifdef _WIN32
+    const uint64_t page=0x1000;
+#else
+    static uint64_t page;
+    if (!page) page=(uint64_t)sysconf(_SC_PAGESIZE);
+#endif
+    uint64_t lo=at&~(page-1), hi=(at+size+page-1)&~(page-1);
     return commit_range(lo,hi);
 }
 int host64_memory_commit_stack(uint32_t sp) {

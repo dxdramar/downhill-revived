@@ -1,6 +1,6 @@
 # The toolchain of the Rust GS renderer (port/render).
-# x64 Windows and the browser only; the i686 build stays on the C renderer (decision D2 = c).
+# x64 Windows, Apple Silicon macOS and the browser; the i686 build stays on the C renderer (decision D2 = c).
 [toolchain]
 channel = "1.97.1"
 profile = "minimal"
-targets = ["x86_64-pc-windows-msvc", "wasm32-unknown-unknown"]
+targets = ["x86_64-pc-windows-msvc", "aarch64-apple-darwin", "wasm32-unknown-unknown"]

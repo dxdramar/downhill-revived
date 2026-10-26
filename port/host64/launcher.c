@@ -42,7 +42,7 @@ void host64_trap(wasm_rt_trap_t code) {
     for (;;) {}
 }
 #endif
-int main(int argc,char **argv) {
+static int run(int argc,char **argv) {
 #ifdef _WIN32
     SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
 #endif
@@ -81,3 +81,67 @@ int main(int argc,char **argv) {
     printf("host64 module exit: %d\n",code);
     return code;
 }
+
+#ifdef DHD_MAIN_THREAD_SDL
+/* macOS (build_host64_macos.py): Cocoa's windows and their events belong to the main thread, so
+   the main thread is SDL's (sdl_host.c's sdl_host_main) and the game runs on a thread of its own,
+   with a main thread's stack. The process ends with the game's code, from that thread. */
+#include <limits.h>
+#include <mach-o/dyld.h>
+#include <pthread.h>
+#include <sys/stat.h>
+void sdl_host_main(void);
+
+/* An app bundle is no place to write: from a .app the game keeps dhd.ini, saves/ and dhd.log in
+   ~/Library/Application Support/Downhill Revived (DHD_SETTINGS and DHD_MEMCARD_DIR, unless set),
+   starting from the bundle's dhd.ini template (port/tools/package_mac.py). A plain dhd64 keeps
+   them beside itself, as on Windows. */
+static void app_folder(void) {
+    char exe[PATH_MAX], real[PATH_MAX], folder[PATH_MAX], path[PATH_MAX];
+    uint32_t size=sizeof exe;
+    if (_NSGetExecutablePath(exe,&size) || !realpath(exe,real)) return;
+    char *bundle=strstr(real,".app/Contents/MacOS/");
+    const char *home=getenv("HOME");
+    if (!bundle || !home) return;
+    snprintf(folder,sizeof folder,"%s/Library/Application Support/Downhill Revived",home);
+    mkdir(folder,0755);
+    snprintf(path,sizeof path,"%s/dhd.ini",folder);
+    if (access(path,F_OK)) {
+        char template[PATH_MAX];
+        snprintf(template,sizeof template,"%.*s.app/Contents/Resources/dhd.ini",(int)(bundle-real),real);
+        FILE *in=fopen(template,"rb"), *out=in ? fopen(path,"wb") : NULL;
+        char buffer[4096]; size_t n;
+        while (out && (n=fread(buffer,1,sizeof buffer,in))>0) fwrite(buffer,1,n,out);
+        if (in) fclose(in);
+        if (out) fclose(out);
+    }
+    setenv("DHD_SETTINGS",path,0);
+    snprintf(path,sizeof path,"%s/saves",folder);
+    setenv("DHD_MEMCARD_DIR",path,0);
+    if (!isatty(STDERR_FILENO)) {  /* started from Finder: the log in the folder */
+        snprintf(path,sizeof path,"%s/dhd.log",folder);
+        if (freopen(path,"w",stderr)) freopen(path,"a",stdout);
+    }
+}
+static int saved_argc;
+static char **saved_argv;
+static void *game_thread(void *unused) {
+    (void)unused;
+    int code=run(saved_argc,saved_argv);
+    fflush(NULL);
+    _exit(code);
+}
+int main(int argc,char **argv) {
+    pthread_attr_t a; pthread_t t;
+    saved_argc=argc; saved_argv=argv;
+    app_folder();
+    pthread_attr_init(&a);
+    pthread_attr_setstacksize(&a,64u<<20);
+    pthread_attr_set_qos_class_np(&a,QOS_CLASS_USER_INTERACTIVE,0);
+    if (pthread_create(&t,&a,game_thread,NULL)) { perror("host64: game thread"); return 1; }
+    sdl_host_main();  /* never returns */
+    return 0;
+}
+#else
+int main(int argc,char **argv) { return run(argc,argv); }
+#endif

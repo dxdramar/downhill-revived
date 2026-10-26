@@ -14,7 +14,8 @@
    behaves as before. Text: SDL's UTF-8 text input, decoded to code points.
 
    Used through hle.h: sdl_host_start (the thread, once), sdl_host_run (a function run on the
-   thread, waiting for it: the window's creation). */
+   thread, waiting for it: the window's creation). On macOS the thread is the main thread
+   (sdl_host_main, from launcher.c). */
 #include "host_api.h"
 #include "../hle/hle.h"
 #include "../hle/text_input.h"
@@ -183,10 +184,26 @@ static int sdl_thread(void *unused)
     return 0;
 }
 
+#if defined(__APPLE__)
+/* macOS: Cocoa's windows and their events belong to the main thread, so the main thread is the
+   SDL thread (launcher.c starts the game on another and calls this). It starts at once; the game
+   thread's sdl_host_start only waits for it. */
+void sdl_host_main(void)
+{
+    up = SDL_CreateSemaphore(0);
+    slot_lock = SDL_CreateMutex();
+    SDL_SetAtomicInt(&started, 1);
+    sdl_thread(NULL);
+}
+#endif
+
 /* Starts the thread once; returns 1 when SDL's events are up there (waits up to 3 s the first time). */
 int sdl_host_start(void)
 {
     static int waited;
+#if defined(__APPLE__)
+    while (!SDL_GetAtomicInt(&started)) SDL_Delay(1);  /* sdl_host_main runs from the start */
+#endif
     if (SDL_CompareAndSwapAtomicInt(&started, 0, 1)) {
         up = SDL_CreateSemaphore(0);
         slot_lock = SDL_CreateMutex();

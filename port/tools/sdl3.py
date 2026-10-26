@@ -11,6 +11,8 @@ output (WASAPI) are built too (finding 083 / W11). No GPU or camera subsystems.
 linux_build() is the same source built for Linux x64 (build_host64_linux.py, WSL only):
 the window (X11 and Wayland where their dev packages are present) and audio
 (PulseAudio/PipeWire and ALSA where present), same SDL version and subsystem selection.
+macos_build() builds it for Apple Silicon macOS (build_host64_macos.py): Cocoa, Core Audio,
+and the controllers through HIDAPI and Apple's GameController framework.
 SDL is zlib-licensed (port/release/THIRD-PARTY-NOTICES.txt).
 
 The download is kept in build/downloads, so a rebuild needs no network. Needs CMake on PATH (or in its default place), LLVM's clang and the
@@ -142,6 +144,16 @@ LINUX_DIRNAME = '%s-linux-x86_64' % VERSION  # build/port/sdl3/<version>-linux-x
 
 
 def linux_build():
+    return posix_build('linux')
+
+
+def macos_build():
+    """linux_build()'s counterpart for macOS arm64: the same version and options, with Cocoa
+    for the window; the frameworks it needs come from sdl3.pc as on Linux."""
+    return posix_build('macos')
+
+
+def posix_build(system):
     """The Linux x64 static library, its include directory and the system libraries it needs.
 
     Same SDL version, same subsystem selection (OPTIONS: the window, audio and controllers;
@@ -154,13 +166,15 @@ def linux_build():
     import json as _json
     if sys.platform == 'win32':
         sys.exit('SDL3: --linux needs WSL or Linux (run python3 port/tools/sdl3.py --linux there)')
-    base = OUT / LINUX_DIRNAME
+    if system == 'macos' and sys.platform != 'darwin':
+        sys.exit('SDL3: --macos needs a Mac')
+    base = OUT / (LINUX_DIRNAME if system == 'linux' else '%s-macos-arm64' % VERSION)
     prefix = base / 'install'
     lib = prefix / 'lib' / 'libSDL3.a'
     include = prefix / 'include'
     stamp = base / 'built.txt'
     libs_file = base / 'link_libs.json'
-    recipe = repr(sorted(OPTIONS.items())) + 'linux-x86_64'
+    recipe = repr(sorted(OPTIONS.items())) + ('linux-x86_64' if system == 'linux' else 'macos-arm64')
     if lib.exists() and stamp.exists() and libs_file.exists() and stamp.read_text() == recipe:
         return lib, include, _json.loads(libs_file.read_text())
     for name in ('cmake', 'ninja', 'pkg-config'):
@@ -182,6 +196,8 @@ def linux_build():
     cmd = ['cmake', '-S', str(src), '-B', str(bld), '-G', 'Ninja',
            '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_INSTALL_PREFIX=' + str(prefix),
            '-DCMAKE_INSTALL_LIBDIR=lib']
+    if system == 'macos':
+        cmd += ['-DCMAKE_OSX_ARCHITECTURES=arm64', '-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0']
     cmd += ['-D%s=%s' % kv for kv in sorted(OPTIONS.items())
             if kv[0] not in ('SDL_INSTALL', 'SDL_DISABLE_INSTALL', 'SDL_DISABLE_UNINSTALL',
                              'HAVE_DINPUT_H', 'HAVE_GAMEINPUT_H')]
@@ -189,16 +205,18 @@ def linux_build():
     for step in (cmd, ['cmake', '--build', str(bld)], ['cmake', '--install', str(bld)]):
         p = subprocess.run(step, capture_output=True, text=True)
         if p.returncode:
-            sys.exit('SDL3 Linux build failed:\n' + (p.stdout + p.stderr)[-4000:])
+            sys.exit('SDL3 %s build failed:\n' % system + (p.stdout + p.stderr)[-4000:])
     if not lib.exists():
         sys.exit('SDL3: %s missing after the build' % lib)
     video = [line for line in (bld / 'CMakeCache.txt').read_text().splitlines()
-             if line.startswith(('SDL_X11:', 'SDL_WAYLAND:'))]
+             if line.startswith(('SDL_X11:', 'SDL_WAYLAND:', 'SDL_COCOA:'))]
     env = dict(os.environ, PKG_CONFIG_PATH=str(prefix / 'lib' / 'pkgconfig'))
     p = subprocess.run(['pkg-config', '--static', '--libs', 'sdl3'], capture_output=True, text=True, env=env)
     if p.returncode:
         sys.exit('SDL3: sdl3.pc missing after install:\n' + (p.stdout + p.stderr)[-2000:])
-    libs = [word for word in p.stdout.split() if word != '-lSDL3' and 'SDL3' not in word]
+    # -L (the install prefix, which may hold spaces) isn't needed: the library is linked by path
+    libs = [word for word in p.stdout.split()
+            if word != '-lSDL3' and 'SDL3' not in word and word.startswith(('-l', '-Wl,', '-pthread'))]
     # The backends' own libraries need not appear above: SDL3 dlopens them
     # (configure logs `dynamic libX11 -> ...`), so the window-backend gate reads
     # the configure result, not the link line. (nm confirms the compiled archive
@@ -211,8 +229,8 @@ def linux_build():
 
 
 if __name__ == '__main__':
-    if sys.argv[1:] == ['--linux']:
-        lib, include, libs = linux_build()
+    if sys.argv[1:] in (['--linux'], ['--macos']):
+        lib, include, libs = linux_build() if sys.argv[1] == '--linux' else macos_build()
         print('%s\n%s\n%s' % (lib, include, ' '.join(libs)))
     else:
         print(*build())
